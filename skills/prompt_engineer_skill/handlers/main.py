@@ -18,6 +18,36 @@ from adaos.sdk.root.developer import RootDeveloperService, TemplateResolutionErr
 from adaos.services.eventbus import emit as bus_emit
 
 _log = logging.getLogger("skills.prompt_engineer")
+_MAX_GIT_LOG_ITEMS = 50
+_MAX_DEV_PROJECT_ITEMS = 500
+_MAX_PROJECT_OBJECTS = 128
+_MAX_PROJECT_FILES = 300
+_MAX_FILE_BYTES = 128 * 1024
+_PROJECT_FILE_EXTS = {
+    ".py",
+    ".json",
+    ".yml",
+    ".yaml",
+    ".md",
+    ".markdown",
+    ".toml",
+    ".txt",
+}
+_SKIP_FILE_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".venv",
+    "venv",
+    "node_modules",
+    "dist",
+    "build",
+    ".adaos_runtime",
+}
 
 # During static validation, handlers are imported in a lightweight subprocess
 # without a full AdaOS runtime. In that case, avoid requiring AgentContext
@@ -30,6 +60,22 @@ else:
 
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _limit_from_payload(payload: Optional[Dict[str, Any]], key: str, *, default: int, maximum: int) -> int:
+    try:
+        value = int((payload or {}).get(key) or default)
+    except Exception:
+        value = default
+    return max(1, min(maximum, value))
+
+
+def _payload_with_kwargs(payload: Optional[Dict[str, Any]] = None, **kwargs: Any) -> Dict[str, Any]:
+    data = dict(payload or {}) if isinstance(payload, dict) else {}
+    for key, value in kwargs.items():
+        if value is not None:
+            data[key] = value
+    return data
 
 
 def _require_ctx():
@@ -65,13 +111,6 @@ def _project_root(object_type: str, object_id: str) -> Path:
     root = (base / object_id).resolve()
     root.mkdir(parents=True, exist_ok=True)
     return root
-
-
-def _ts_artifact_path(root: Path) -> Path:
-    """
-    Location for the TS draft artifact used by Prompt IDE (LLM Artifacts panel).
-    """
-    return root / "artifacts" / "llm_artifacts" / "ts_draft.md"
 
 
 def _ts_artifact_path(root: Path) -> Path:
@@ -122,7 +161,7 @@ def _git_log_path(root: Path) -> Path:
 
 
 @tool("prompt_get_git_log")
-def prompt_get_git_log(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def prompt_get_git_log(payload: Optional[Dict[str, Any]] = None, **kwargs: Any) -> Dict[str, Any]:
     """
     Return the recent Prompt IDE git actions for the requested project.
     """
@@ -143,6 +182,8 @@ def prompt_get_git_log(payload: Optional[Dict[str, Any]] = None) -> Dict[str, An
                 items = [e for e in data if isinstance(e, dict)]
         except Exception:
             items = []
+    limit = _limit_from_payload(payload, "limit", default=_MAX_GIT_LOG_ITEMS, maximum=_MAX_GIT_LOG_ITEMS)
+    items = items[-limit:]
 
     return {"ok": True, "object_type": object_type, "object_id": object_id, "items": items}
 
@@ -166,8 +207,7 @@ def _append_git_log(object_type: str, object_id: str, result: Dict[str, Any]) ->
         "result": result,
     }
     existing.append(entry)
-    # keep only last 50 entries
-    existing = existing[-50:]
+    existing = existing[-_MAX_GIT_LOG_ITEMS:]
     log_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -466,13 +506,13 @@ def tz_execute(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
 
 
 @tool("prompt_llm_list_models")
-def prompt_llm_list_models(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def prompt_llm_list_models(payload: Optional[Dict[str, Any]] = None, **kwargs: Any) -> Dict[str, Any]:
     """
     List available LLM models from the Root LLM proxy.
     """
     from adaos.sdk.llm.llm_client import list_llm_models
 
-    payload = payload or {}
+    payload = _payload_with_kwargs(payload, **kwargs)
     timeout = payload.get("timeout")
     try:
         data = list_llm_models(timeout=float(timeout) if timeout is not None else None)
@@ -525,7 +565,7 @@ def _list_dirs(root: Path) -> List[str]:
 
 
 @tool("prompt_list_dev_projects")
-def prompt_list_dev_projects(payload: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+def prompt_list_dev_projects(payload: Optional[Dict[str, Any]] = None, **kwargs: Any) -> List[Dict[str, Any]]:
     """
     List available skills and scenarios in the DEV space.
 
@@ -533,6 +573,7 @@ def prompt_list_dev_projects(payload: Optional[Dict[str, Any]] = None) -> List[D
     return only the three stage entries (TZ/Prepare/Generate) for that
     object. Otherwise return a flat list for all dev projects.
     """
+    payload = _payload_with_kwargs(payload, **kwargs)
     ctx = _require_ctx()
     dev_skills = _list_dirs(ctx.paths.dev_skills_dir())
     dev_scenarios = _list_dirs(ctx.paths.dev_scenarios_dir())
@@ -574,11 +615,12 @@ def prompt_list_dev_projects(payload: Optional[Dict[str, Any]] = None) -> List[D
         items.extend(_stages_for("scenario", name))
     for name in dev_skills:
         items.extend(_stages_for("skill", name))
-    return items
+    limit = _limit_from_payload(payload, "limit", default=_MAX_DEV_PROJECT_ITEMS, maximum=_MAX_DEV_PROJECT_ITEMS)
+    return items[:limit]
 
 
 @tool("prompt_list_dev_objects")
-def prompt_list_dev_objects(payload: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:  # noqa: ARG001
+def prompt_list_dev_objects(payload: Optional[Dict[str, Any]] = None, **kwargs: Any) -> List[Dict[str, Any]]:
     """
     List root DEV objects (skills and scenarios) without stages for
     project selection modals.
@@ -587,6 +629,7 @@ def prompt_list_dev_objects(payload: Optional[Dict[str, Any]] = None) -> List[Di
     (scenario.yaml / skill.yaml) when available so that the UI can show
     name, version and description.
     """
+    payload = _payload_with_kwargs(payload, **kwargs)
     ctx = _require_ctx()
     dev_skills_root = ctx.paths.dev_skills_dir()
     dev_scenarios_root = ctx.paths.dev_scenarios_dir()
@@ -664,6 +707,8 @@ def prompt_list_dev_objects(payload: Optional[Dict[str, Any]] = None) -> List[Di
 
     items: List[Dict[str, Any]] = []
 
+    limit = _limit_from_payload(payload, "limit", default=_MAX_DEV_PROJECT_ITEMS, maximum=_MAX_DEV_PROJECT_ITEMS)
+
     for name in _list_dirs(dev_scenarios_root):
         meta = _scenario_meta(name)
         items.append(
@@ -681,6 +726,8 @@ def prompt_list_dev_objects(payload: Optional[Dict[str, Any]] = None) -> List[Di
                 "workflow_state": meta["workflow_state"],
             }
         )
+        if len(items) >= limit:
+            return items
 
     for name in _list_dirs(dev_skills_root):
         meta = _skill_meta(name)
@@ -699,12 +746,14 @@ def prompt_list_dev_objects(payload: Optional[Dict[str, Any]] = None) -> List[Di
                 "workflow_state": meta["workflow_state"],
             }
         )
+        if len(items) >= limit:
+            return items
 
     return items
 
 
 @tool("prompt_list_project_objects")
-def prompt_list_project_objects(payload: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+def prompt_list_project_objects(payload: Optional[Dict[str, Any]] = None, **kwargs: Any) -> List[Dict[str, Any]]:
     """
     List constituent objects for a Prompt IDE project.
 
@@ -712,7 +761,7 @@ def prompt_list_project_objects(payload: Optional[Dict[str, Any]] = None) -> Lis
       - skill project   -> a single skill object;
       - scenario project -> the scenario itself + its ``depends`` skills.
     """
-    payload = payload or {}
+    payload = _payload_with_kwargs(payload, **kwargs)
     project_type = (payload.get("project_type") or payload.get("object_type") or "").strip().lower()
     project_id = (payload.get("project_id") or payload.get("object_id") or "").strip()
     if not project_type or not project_id:
@@ -829,6 +878,8 @@ def prompt_list_project_objects(payload: Optional[Dict[str, Any]] = None) -> Lis
             _log.warning("failed to read scenario depends for %s", project_id, exc_info=True)
 
     for dep in depends:
+        if len(items) >= _MAX_PROJECT_OBJECTS:
+            break
         try:
             items.append(_project_item("skill", dep))
         except Exception:
@@ -858,7 +909,7 @@ def _detect_language_from_suffix(path: Path) -> str:
 
 
 @tool("prompt_list_project_files")
-def prompt_list_project_files(payload: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+def prompt_list_project_files(payload: Optional[Dict[str, Any]] = None, **kwargs: Any) -> List[Dict[str, Any]]:
     """
     List relevant source files for a prompt project.
 
@@ -868,39 +919,51 @@ def prompt_list_project_files(payload: Optional[Dict[str, Any]] = None) -> List[
     Workspace fallback passes a single JSON payload dict, so we accept
     ``payload`` instead of positional arguments.
     """
-    payload = payload or {}
+    payload = _payload_with_kwargs(payload, **kwargs)
     object_type = payload.get("object_type")
     object_id = payload.get("object_id")
     if not object_type or not object_id:
         return []
     root = _project_root(object_type, object_id)
-    exts = {".py", ".json", ".yml", ".yaml"}
+    limit = _limit_from_payload(payload, "limit", default=_MAX_PROJECT_FILES, maximum=_MAX_PROJECT_FILES)
     items: List[Dict[str, Any]] = []
 
     if not root.exists():
         return items
 
-    for path in sorted(root.rglob("*")):
-        if not path.is_file():
-            continue
-        if path.suffix.lower() not in exts:
-            continue
-        rel = path.relative_to(root).as_posix()
-        items.append(
-            {
-                "id": rel,
-                "label": rel,
-                "path": rel,
-                "object_type": object_type,
-                "object_id": object_id,
-                "language": _detect_language_from_suffix(path),
-            }
+    for current, dirs, files in os.walk(root):
+        dirs[:] = sorted(
+            name
+            for name in dirs
+            if name not in _SKIP_FILE_DIRS and not (name.startswith(".") and name not in {".codex-plugin"})
         )
+        current_path = Path(current)
+        for filename in sorted(files):
+            path = current_path / filename
+            if path.suffix.lower() not in _PROJECT_FILE_EXTS:
+                continue
+            try:
+                rel = path.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            items.append(
+                {
+                    "id": rel,
+                    "label": rel,
+                    "path": rel,
+                    "object_type": object_type,
+                    "object_id": object_id,
+                    "language": _detect_language_from_suffix(path),
+                    "size_bytes": path.stat().st_size,
+                }
+            )
+            if len(items) >= limit:
+                return items
     return items
 
 
 @tool("prompt_read_project_file")
-def prompt_read_project_file(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def prompt_read_project_file(payload: Optional[Dict[str, Any]] = None, **kwargs: Any) -> Dict[str, Any]:
     """
     Read a single project file for code viewer.
 
@@ -908,7 +971,7 @@ def prompt_read_project_file(payload: Optional[Dict[str, Any]] = None) -> Dict[s
     project-relative ``path`` as returned by
     ``prompt_list_project_files``.
     """
-    payload = payload or {}
+    payload = _payload_with_kwargs(payload, **kwargs)
     object_type = payload.get("object_type")
     object_id = payload.get("object_id")
     path = payload.get("path")
@@ -926,7 +989,10 @@ def prompt_read_project_file(payload: Optional[Dict[str, Any]] = None) -> Dict[s
         raise ValueError("path is outside project root") from exc
 
     language = _detect_language_from_suffix(full)
-    content = _read_text(full)
+    max_bytes = _limit_from_payload(payload, "max_bytes", default=_MAX_FILE_BYTES, maximum=_MAX_FILE_BYTES)
+    raw = full.read_bytes()
+    truncated = len(raw) > max_bytes
+    content = raw[:max_bytes].decode("utf-8", errors="replace")
     return {
         "ok": True,
         "object_type": object_type,
@@ -934,6 +1000,9 @@ def prompt_read_project_file(payload: Optional[Dict[str, Any]] = None) -> Dict[s
         "path": rel_path.as_posix(),
         "language": language,
         "content": content,
+        "truncated": truncated,
+        "size_bytes": len(raw),
+        "max_bytes": max_bytes,
     }
 
 
@@ -1006,7 +1075,7 @@ def prompt_list_templates(payload: Optional[Dict[str, Any]] = None) -> List[Dict
 
 
 @tool("prompt_create_dev_project")
-def prompt_create_dev_project(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def prompt_create_dev_project(payload: Optional[Dict[str, Any]] = None, **kwargs: Any) -> Dict[str, Any]:
     """
     Create a DEV skill or scenario using the same RootDeveloperService
     workflow as ``adaos dev skill|scenario create``.
@@ -1024,7 +1093,7 @@ def prompt_create_dev_project(payload: Optional[Dict[str, Any]] = None) -> Dict[
                     return nested.strip()
         return ""
 
-    payload = payload or {}
+    payload = _payload_with_kwargs(payload, **kwargs)
     object_type = _coerce_text(payload.get("object_type") or payload.get("project_type"))
     name = _coerce_text(payload.get("name") or payload.get("object_id") or payload.get("project_id"))
     template_value = _coerce_text(payload.get("template"))

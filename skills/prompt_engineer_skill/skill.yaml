@@ -1,5 +1,5 @@
 name: prompt_engineer_skill
-version: 0.6.1
+version: 0.6.3
 entry: handlers/main.py
 runtime:
   python: '3.11'
@@ -8,6 +8,93 @@ description: Prompt IDE backend skill that manages dev scenarios/skills, technic
 dependencies:
 - requests>=2.31.0
 events: {}
+data_routes:
+- surface: scenario:prompt_engineer.project_selector
+  route: tool/details
+  owner: skill:prompt_engineer_skill
+  path: prompt_list_dev_objects
+  first_paint: project selector calls the bounded tool when opened
+  recovery: tool call can be repeated; no project list is stored in YJS
+  update_source:
+  - prompt.project.changed
+  budget:
+    max_payload_bytes: 65536
+    max_publish_hz: 0.2
+    max_items: 500
+    snapshot_policy: manual
+  guard_visibility:
+    degraded_state: Selector shows an empty/error state without affecting editor content.
+    log: service.prompt_engineer_skill.runtime.log
+    quarantine: false
+    metric: tool_guard.prompt_engineer.project_selector
+- surface: scenario:prompt_engineer.project_tree
+  route: tool/details
+  owner: skill:prompt_engineer_skill
+  path: prompt_list_project_objects
+  first_paint: project tree is loaded on explicit project selection
+  recovery: tool call can be repeated for the selected project
+  update_source:
+  - prompt.project.changed
+  budget:
+    max_payload_bytes: 65536
+    max_items: 128
+    snapshot_policy: manual
+  guard_visibility:
+    degraded_state: Project tree keeps the selected project state and can be retried.
+    log: service.prompt_engineer_skill.runtime.log
+    quarantine: false
+    metric: tool_guard.prompt_engineer.project_tree
+- surface: scenario:prompt_engineer.file_list
+  route: tool/details
+  owner: skill:prompt_engineer_skill
+  path: prompt_list_project_files
+  first_paint: file list is loaded for the selected project via a bounded tool call
+  recovery: tool call can be repeated; file list is not stored in YJS
+  update_source:
+  - prompt.project.changed
+  budget:
+    max_payload_bytes: 65536
+    max_items: 300
+    snapshot_policy: manual
+  guard_visibility:
+    degraded_state: File list keeps last UI selection and can be refreshed.
+    log: service.prompt_engineer_skill.runtime.log
+    quarantine: false
+    metric: tool_guard.prompt_engineer.file_list
+- surface: scenario:prompt_engineer.file_content
+  route: tool/details
+  owner: skill:prompt_engineer_skill
+  path: prompt_read_project_file
+  first_paint: code viewer loads only the active file
+  recovery: file content is re-read on demand and capped by max_bytes
+  update_source:
+  - user.file.select
+  budget:
+    max_payload_bytes: 131072
+    snapshot_policy: manual
+  guard_visibility:
+    degraded_state: Code viewer shows truncation metadata instead of sending oversized
+      files.
+    log: service.prompt_engineer_skill.runtime.log
+    quarantine: false
+    metric: tool_guard.prompt_engineer.file_content
+- surface: scenario:prompt_engineer.git_log
+  route: tool/details
+  owner: skill:prompt_engineer_skill
+  path: prompt_get_git_log
+  first_paint: git log is loaded from bounded project history on demand
+  recovery: tool call can be repeated; persisted log is capped by item count
+  update_source:
+  - prompt.git.action
+  budget:
+    max_payload_bytes: 65536
+    max_items: 50
+    snapshot_policy: manual
+  guard_visibility:
+    degraded_state: Git panel keeps command controls and can retry loading history.
+    log: service.prompt_engineer_skill.runtime.log
+    quarantine: false
+    metric: tool_guard.prompt_engineer.git_log
 tools:
 - name: prompt_load_state
   description: Load or initialize PromptProjectState for a skill or scenario
@@ -634,5 +721,5 @@ tools:
     type: object
     properties: {}
 exports: {}
-updated_at: '2026-05-12T03:49:07+00:00'
+updated_at: '2026-05-20T17:34:39+00:00'
 
