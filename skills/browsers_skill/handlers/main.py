@@ -48,12 +48,21 @@ _DATA_PROJECTION_ENTRIES = [
     {"scope": "subnet", "slot": "browsers.current_summary", "targets": [{"backend": "yjs", "path": "data/browsers/current_summary"}]},
     {"scope": "subnet", "slot": "browsers.current_name", "targets": [{"backend": "yjs", "path": "data/browsers/current_name"}]},
 ]
+
+
+def _projection_slot(name: str, path: str) -> ProjectionSlot:
+    try:
+        return ProjectionSlot(name, path, demand="always")
+    except TypeError:
+        return ProjectionSlot(name, path)
+
+
 _PROJECTION_SLOTS = [
-    ProjectionSlot("browsers.summary", "data/browsers/summary", demand="always"),
-    ProjectionSlot("browsers.devices", "data/browsers/devices", demand="always"),
-    ProjectionSlot("browsers.clients", "data/browsers/clients", demand="always"),
-    ProjectionSlot("browsers.current_summary", "data/browsers/current_summary", demand="always"),
-    ProjectionSlot("browsers.current_name", "data/browsers/current_name", demand="always"),
+    _projection_slot("browsers.summary", "data/browsers/summary"),
+    _projection_slot("browsers.devices", "data/browsers/devices"),
+    _projection_slot("browsers.clients", "data/browsers/clients"),
+    _projection_slot("browsers.current_summary", "data/browsers/current_summary"),
+    _projection_slot("browsers.current_name", "data/browsers/current_name"),
 ]
 _PROJECTION_SLOT_BY_NAME = {slot.name: slot for slot in _PROJECTION_SLOTS}
 _PROJECTION_RUNTIME = ProjectionRuntime(
