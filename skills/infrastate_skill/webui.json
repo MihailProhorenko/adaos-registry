@@ -5,6 +5,7 @@
       "infrastate.operations.active": {
         "mode": "replace",
         "transport": "hub",
+        "snapshotPolicy": "on_subscribe",
         "initialState": [],
         "budget": { "maxPayloadBytes": 16384, "maxPublishHz": 2, "maxSnapshotHz": 1, "maxItems": 64 },
         "guardVisibility": { "degradedState": "Keep last active operation rows and surface stream guard pressure.", "log": "service.infrastate_skill.runtime.log", "quarantine": false, "metric": "webio_stream_guard.infrastate.operations.active" },
@@ -13,6 +14,7 @@
       "infrastate.logs.recent": {
         "mode": "replace",
         "transport": "hub",
+        "snapshotPolicy": "on_subscribe",
         "initialState": [],
         "budget": { "maxPayloadBytes": 32768, "maxPublishHz": 0.5, "maxSnapshotHz": 1, "maxItems": 64 },
         "guardVisibility": { "degradedState": "Keep last recent log cards; raw logs stay external.", "log": "service.infrastate_skill.runtime.log", "quarantine": false, "metric": "webio_stream_guard.infrastate.logs.recent" },
@@ -21,6 +23,7 @@
       "infrastate.events.recent": {
         "mode": "replace",
         "transport": "hub",
+        "snapshotPolicy": "on_subscribe",
         "initialState": [],
         "budget": { "maxPayloadBytes": 32768, "maxPublishHz": 0.5, "maxSnapshotHz": 1, "maxItems": 64 },
         "guardVisibility": { "degradedState": "Keep last event cards; raw evidence stays in logs/eventbus.", "log": "service.infrastate_skill.runtime.log", "quarantine": false, "metric": "webio_stream_guard.infrastate.events.recent" },
@@ -29,6 +32,7 @@
       "infrastate.yjs.load_mark": {
         "mode": "replace",
         "transport": "hub",
+        "snapshotPolicy": "on_subscribe",
         "initialState": [],
         "budget": { "maxPayloadBytes": 24576, "maxPublishHz": 0.5, "maxSnapshotHz": 1, "maxItems": 64 },
         "guardVisibility": { "degradedState": "Keep last Yjs pressure rows; guard cards carry current pressure.", "log": "service.infrastate_skill.runtime.log", "quarantine": false, "metric": "webio_stream_guard.infrastate.yjs.load_mark" },
@@ -37,6 +41,7 @@
       "infrastate.build": {
         "mode": "replace",
         "transport": "hub",
+        "snapshotPolicy": "on_subscribe",
         "initialState": [],
         "budget": { "maxPayloadBytes": 8192, "maxPublishHz": 0.5, "maxSnapshotHz": 1, "maxItems": 16 },
         "guardVisibility": { "degradedState": "Keep last build metadata rows.", "log": "service.infrastate_skill.runtime.log", "quarantine": false, "metric": "webio_stream_guard.infrastate.build" },
@@ -45,6 +50,7 @@
       "infrastate.steps": {
         "mode": "replace",
         "transport": "hub",
+        "snapshotPolicy": "on_subscribe",
         "initialState": [],
         "budget": { "maxPayloadBytes": 16384, "maxPublishHz": 0.5, "maxSnapshotHz": 1, "maxItems": 32 },
         "guardVisibility": { "degradedState": "Keep last pipeline rows.", "log": "service.infrastate_skill.runtime.log", "quarantine": false, "metric": "webio_stream_guard.infrastate.steps" },
@@ -53,6 +59,7 @@
       "infrastate.realtime": {
         "mode": "replace",
         "transport": "hub",
+        "snapshotPolicy": "on_subscribe",
         "initialState": [],
         "budget": { "maxPayloadBytes": 16384, "maxPublishHz": 1, "maxSnapshotHz": 1, "maxItems": 32 },
         "guardVisibility": { "degradedState": "Keep last realtime rows and surface route/Yjs guard cards.", "log": "service.infrastate_skill.runtime.log", "quarantine": false, "metric": "webio_stream_guard.infrastate.realtime" },
@@ -61,6 +68,7 @@
       "infrastate.slots": {
         "mode": "replace",
         "transport": "hub",
+        "snapshotPolicy": "on_subscribe",
         "initialState": [],
         "budget": { "maxPayloadBytes": 16384, "maxPublishHz": 0.5, "maxSnapshotHz": 1, "maxItems": 32 },
         "guardVisibility": { "degradedState": "Keep last slot manifest rows.", "log": "service.infrastate_skill.runtime.log", "quarantine": false, "metric": "webio_stream_guard.infrastate.slots" },
@@ -69,6 +77,7 @@
       "infrastate.skills": {
         "mode": "replace",
         "transport": "hub",
+        "snapshotPolicy": "on_subscribe",
         "initialState": { "status": "init", "message": "Loading installed skills...", "items": [] },
         "budget": { "maxPayloadBytes": 65536, "maxPublishHz": 0.5, "maxSnapshotHz": 1, "maxItems": 256 },
         "guardVisibility": { "degradedState": "Keep last skills inventory stream value.", "log": "service.infrastate_skill.runtime.log", "quarantine": false, "metric": "webio_stream_guard.infrastate.skills" },
@@ -77,6 +86,7 @@
       "infrastate.scenarios": {
         "mode": "replace",
         "transport": "hub",
+        "snapshotPolicy": "on_subscribe",
         "initialState": { "status": "init", "message": "Loading installed scenarios...", "items": [] },
         "budget": { "maxPayloadBytes": 65536, "maxPublishHz": 0.5, "maxSnapshotHz": 1, "maxItems": 256 },
         "guardVisibility": { "degradedState": "Keep last scenarios inventory stream value.", "log": "service.infrastate_skill.runtime.log", "quarantine": false, "metric": "webio_stream_guard.infrastate.scenarios" },
@@ -85,6 +95,7 @@
       "infrastate.marketplace.skills": {
         "mode": "replace",
         "transport": "hub",
+        "snapshotPolicy": "on_subscribe",
         "initialState": [],
         "budget": { "maxPayloadBytes": 65536, "maxPublishHz": 0.2, "maxSnapshotHz": 1, "maxItems": 256 },
         "guardVisibility": { "degradedState": "Keep last marketplace skill rows.", "log": "service.infrastate_skill.runtime.log", "quarantine": false, "metric": "webio_stream_guard.infrastate.marketplace.skills" },
@@ -93,6 +104,7 @@
       "infrastate.marketplace.scenarios": {
         "mode": "replace",
         "transport": "hub",
+        "snapshotPolicy": "on_subscribe",
         "initialState": [],
         "budget": { "maxPayloadBytes": 65536, "maxPublishHz": 0.2, "maxSnapshotHz": 1, "maxItems": 256 },
         "guardVisibility": { "degradedState": "Keep last marketplace scenario rows.", "log": "service.infrastate_skill.runtime.log", "quarantine": false, "metric": "webio_stream_guard.infrastate.marketplace.scenarios" },
@@ -101,6 +113,7 @@
       "infrastate.core_update_diagnostics": {
         "mode": "replace",
         "transport": "hub",
+        "snapshotPolicy": "on_subscribe",
         "initialState": [],
         "budget": { "maxPayloadBytes": 65536, "maxPublishHz": 0.2, "maxSnapshotHz": 1, "maxItems": 64 },
         "guardVisibility": { "degradedState": "Keep last core update diagnostic cards.", "log": "service.infrastate_skill.runtime.log", "quarantine": false, "metric": "webio_stream_guard.infrastate.core_update_diagnostics" },
@@ -109,6 +122,7 @@
       "infrastate.details.*": {
         "mode": "replace",
         "transport": "hub",
+        "snapshotPolicy": "on_subscribe",
         "initialState": null,
         "budget": { "maxPayloadBytes": 65536, "maxPublishHz": 1, "maxSnapshotHz": 1, "maxItems": 1 },
         "guardVisibility": { "degradedState": "Detail modal shows stale/degraded placeholder.", "log": "service.infrastate_skill.runtime.log", "quarantine": false, "metric": "webio_stream_guard.infrastate.details" },
