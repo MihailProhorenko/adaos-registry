@@ -4110,6 +4110,36 @@ def _extract_param(payload: Any, key: str) -> Any:
     return None
 
 
+def _payload_target_node_id(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    candidates = [
+        payload.get("target_node_id"),
+        payload.get("node_id"),
+    ]
+    meta = payload.get("_meta")
+    if isinstance(meta, dict):
+        candidates.extend(
+            [
+                meta.get("target_node_id"),
+                meta.get("node_id"),
+            ]
+        )
+    value = payload.get("value")
+    if isinstance(value, dict):
+        candidates.extend(
+            [
+                value.get("target_node_id"),
+                value.get("node_id"),
+            ]
+        )
+    for candidate in candidates:
+        token = str(candidate or "").strip()
+        if token:
+            return token
+    return ""
+
+
 def _status_log_items(status: dict[str, Any]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     command = str(status.get("command") or "").strip()
@@ -5630,6 +5660,16 @@ def _perform_action(action_id: str, conf, payload: Any | None = None) -> dict[st
     status = read_core_update_status()
     selected_node_id = str(_ui_state().get("selected_node_id") or getattr(conf, "node_id", "") or "")
     local_node_id = str(getattr(conf, "node_id", "") or "").strip()
+    payload_target_node_id = _payload_target_node_id(payload)
+    if payload_target_node_id and payload_target_node_id != local_node_id:
+        selected_node_id = payload_target_node_id
+        action_id = {
+            "start_update": "member_start_update",
+            "cancel_update": "member_cancel_update",
+            "refuse_update": "member_cancel_update",
+            "rollback": "member_rollback",
+            "drain": "member_drain",
+        }.get(action_id, action_id)
     if (
         action_id in {
             "start_update",
