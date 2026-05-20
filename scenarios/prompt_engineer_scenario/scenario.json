@@ -1,6 +1,6 @@
 {
   "id": "prompt_engineer_scenario",
-  "version": "0.1.0",
+  "version": "0.3.2",
   "name": "Prompt IDE Workspace",
   "type": "desktop",
   "title": "Prompt IDE",
@@ -176,8 +176,13 @@
               "area": "sidebar",
               "title": "Files",
               "dataSource": {
-                "kind": "y",
-                "path": "data/prompt/files/list"
+                "kind": "skill",
+                "name": "prompt_engineer_skill.prompt_list_project_files",
+                "params": {
+                  "object_type": "$state.currentObjectType",
+                  "object_id": "$state.currentObjectId",
+                  "limit": 300
+                }
               },
               "inputs": {
                 "labelField": "label",
