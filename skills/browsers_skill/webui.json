@@ -4,26 +4,49 @@
     "receivers": {
       "browsers.summary": {
         "mode": "replace",
-        "transport": "hub"
+        "transport": "hub",
+        "snapshotPolicy": "on_subscribe",
+        "updatedAtField": "updated_at",
+        "budget": { "maxPayloadBytes": 4096, "maxPublishHz": 2, "maxSnapshotHz": 1, "maxItems": 1 },
+        "guardVisibility": { "degradedState": "Keep last compact browser totals.", "log": "service.browsers_skill.runtime.log", "quarantine": false, "metric": "webio_stream_guard.browsers.summary" },
+        "route": { "kind": "stream", "owner": "skill:browsers_skill", "surface": "app:browsers.summary", "firstPaint": "empty browser totals", "recovery": "snapshot requested on stream subscribe" },
+        "initialState": { "title": "Browsers", "value": 0, "subtitle": "0 devices | 0 clients", "details": "0 online" }
       },
       "browsers.devices": {
         "mode": "replace",
         "transport": "hub",
+        "snapshotPolicy": "on_subscribe",
+        "budget": { "maxPayloadBytes": 32768, "maxPublishHz": 2, "maxSnapshotHz": 1, "maxItems": 128 },
+        "guardVisibility": { "degradedState": "Keep last compact browser device list.", "log": "service.browsers_skill.runtime.log", "quarantine": false, "metric": "webio_stream_guard.browsers.devices" },
+        "route": { "kind": "stream", "owner": "skill:browsers_skill", "surface": "app:browsers.devices", "firstPaint": "empty browser devices list", "recovery": "snapshot requested on stream subscribe" },
         "initialState": []
       },
       "browsers.clients": {
         "mode": "replace",
         "transport": "hub",
+        "snapshotPolicy": "on_subscribe",
+        "budget": { "maxPayloadBytes": 32768, "maxPublishHz": 2, "maxSnapshotHz": 1, "maxItems": 128 },
+        "guardVisibility": { "degradedState": "Keep last compact browser client list.", "log": "service.browsers_skill.runtime.log", "quarantine": false, "metric": "webio_stream_guard.browsers.clients" },
+        "route": { "kind": "stream", "owner": "skill:browsers_skill", "surface": "app:browsers.clients", "firstPaint": "empty browser clients list", "recovery": "snapshot requested on stream subscribe" },
         "initialState": []
       },
       "browsers.current_summary": {
         "mode": "replace",
         "transport": "hub",
+        "snapshotPolicy": "on_subscribe",
+        "budget": { "maxPayloadBytes": 8192, "maxPublishHz": 2, "maxSnapshotHz": 1, "maxItems": 16 },
+        "guardVisibility": { "degradedState": "Keep last selected browser summary.", "log": "service.browsers_skill.runtime.log", "quarantine": false, "metric": "webio_stream_guard.browsers.current_summary" },
+        "route": { "kind": "stream", "owner": "skill:browsers_skill", "surface": "app:browsers.current_summary", "firstPaint": "no selected browser summary", "recovery": "snapshot requested on stream subscribe" },
         "initialState": []
       },
       "browsers.current_name": {
         "mode": "replace",
-        "transport": "hub"
+        "transport": "hub",
+        "snapshotPolicy": "on_subscribe",
+        "budget": { "maxPayloadBytes": 2048, "maxPublishHz": 2, "maxSnapshotHz": 1, "maxItems": 1 },
+        "guardVisibility": { "degradedState": "Keep last selected browser title.", "log": "service.browsers_skill.runtime.log", "quarantine": false, "metric": "webio_stream_guard.browsers.current_name" },
+        "route": { "kind": "stream", "owner": "skill:browsers_skill", "surface": "app:browsers.current_name", "firstPaint": "empty selected browser title", "recovery": "snapshot requested on stream subscribe" },
+        "initialState": { "value": "", "device_id": "" }
       }
     }
   },

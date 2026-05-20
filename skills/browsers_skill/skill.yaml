@@ -1,11 +1,152 @@
 name: browsers_skill
-version: 0.14.7
+version: 0.15.1
 entry: handlers/main.py
 runtime:
   python: '3.11'
 description: ''
 dependencies: []
-events: {}
+events:
+  subscribe:
+  - webio.stream.snapshot.requested
+  - webio.stream.subscription.changed
+  - sys.ready
+  - skills.activated
+  - desktop.webspace.refresh
+  - desktop.webspace.reload
+  - desktop.webspace.reloaded
+  - browser.session.changed
+  - device.registered
+  - subnet.member.link.up
+  - subnet.member.link.down
+  publish:
+  - io.out.stream.publish
+data_routes:
+- surface: app:browsers.summary
+  route: yjs
+  owner: skill:browsers_skill
+  projection_slot: browsers.summary
+  path: data/browsers/summary
+  first_paint: compact browser totals from the last YJS projection
+  recovery: YJS replay restores compact totals; refresh recomputes inventory when
+    browser state changes.
+  update_source:
+  - browser.session.changed
+  - device.registered
+  - desktop.webspace.refresh
+  budget:
+    max_payload_bytes: 4096
+    max_publish_hz: 2
+    coalesce_ms: 250
+    snapshot_policy: none
+  guard_visibility:
+    degraded_state: Browser launcher keeps the last compact totals.
+    log: service.browsers_skill.runtime.log
+    quarantine: true
+    metric: yjs_owner_guard.browsers.summary
+- surface: app:browsers.devices
+  route: yjs
+  owner: skill:browsers_skill
+  projection_slot: browsers.devices
+  path: data/browsers/devices
+  first_paint: compact device tiles from the last YJS projection
+  recovery: YJS replay restores current browser device tiles; stream receiver can
+    refresh details on subscribe.
+  update_source:
+  - browser.session.changed
+  - device.registered
+  budget:
+    max_payload_bytes: 32768
+    max_publish_hz: 1
+    coalesce_ms: 500
+    max_items: 128
+    snapshot_policy: none
+  guard_visibility:
+    degraded_state: Device list keeps last compact tiles.
+    log: service.browsers_skill.runtime.log
+    quarantine: true
+    metric: yjs_owner_guard.browsers.devices
+- surface: app:browsers.clients
+  route: yjs
+  owner: skill:browsers_skill
+  projection_slot: browsers.clients
+  path: data/browsers/clients
+  first_paint: compact client tiles from the last YJS projection
+  recovery: YJS replay restores current browser client tiles; stream receiver can
+    refresh details on subscribe.
+  update_source:
+  - browser.session.changed
+  - device.registered
+  budget:
+    max_payload_bytes: 32768
+    max_publish_hz: 1
+    coalesce_ms: 500
+    max_items: 128
+    snapshot_policy: none
+  guard_visibility:
+    degraded_state: Client list keeps last compact tiles.
+    log: service.browsers_skill.runtime.log
+    quarantine: true
+    metric: yjs_owner_guard.browsers.clients
+- surface: app:browsers.current_summary
+  route: yjs
+  owner: skill:browsers_skill
+  projection_slot: browsers.current_summary
+  path: data/browsers/current_summary
+  first_paint: selected browser summary from YJS
+  recovery: YJS replay restores selection summary; action refresh recomputes selected
+    browser.
+  update_source:
+  - browsers_skill.select_browser
+  - browser.session.changed
+  budget:
+    max_payload_bytes: 8192
+    max_publish_hz: 2
+    coalesce_ms: 250
+    snapshot_policy: none
+  guard_visibility:
+    degraded_state: Current browser panel keeps last selected summary.
+    log: service.browsers_skill.runtime.log
+    quarantine: true
+    metric: yjs_owner_guard.browsers.current_summary
+- surface: app:browsers.current_name
+  route: yjs
+  owner: skill:browsers_skill
+  projection_slot: browsers.current_name
+  path: data/browsers/current_name
+  first_paint: selected browser title from YJS
+  recovery: YJS replay restores selected browser title.
+  update_source:
+  - browsers_skill.select_browser
+  - browser.session.changed
+  budget:
+    max_payload_bytes: 2048
+    max_publish_hz: 2
+    coalesce_ms: 250
+    snapshot_policy: none
+  guard_visibility:
+    degraded_state: Header keeps last selected browser title.
+    log: service.browsers_skill.runtime.log
+    quarantine: true
+    metric: yjs_owner_guard.browsers.current_name
+- surface: app:browsers.streams
+  route: stream
+  owner: skill:browsers_skill
+  receiver: browsers.*
+  first_paint: receiver-specific empty state until the modal subscribes
+  recovery: Stream snapshot request rebuilds only the subscribed browser receiver.
+  update_source:
+  - webio.stream.snapshot.requested
+  budget:
+    max_payload_bytes: 32768
+    max_publish_hz: 2
+    coalesce_ms: 250
+    max_items: 128
+    snapshot_policy: on_subscribe
+  guard_visibility:
+    degraded_state: Browser modal keeps its last local stream state.
+    log: service.browsers_skill.runtime.log
+    quarantine: false
+    metric: webio_stream_guard.browsers
 data_projections:
 - scope: subnet
   slot: browsers.summary
@@ -32,7 +173,147 @@ data_projections:
   targets:
   - backend: yjs
     path: data/browsers/current_name
-tools: []
+default_tool: refresh_snapshot
+tools:
+- name: refresh_snapshot
+  description: Recompute compact browser inventory projections for one webspace.
+  entry: handlers.main:refresh_snapshot
+  input_schema:
+    type: object
+    properties:
+      webspace_id:
+        type:
+        - string
+        - 'null'
+  output_schema:
+    type: object
+- name: select_browser
+  description: Select a browser device for the current browser modal.
+  entry: handlers.main:select_browser
+  input_schema:
+    type: object
+    required:
+    - device_id
+    properties:
+      device_id:
+        type: string
+      webspace_id:
+        type:
+        - string
+        - 'null'
+  output_schema:
+    type: object
+- name: rename_device
+  description: Rename a browser, member, or device access link.
+  entry: handlers.main:rename_device
+  input_schema:
+    type: object
+    properties:
+      name:
+        type: string
+      device_ref:
+        type: string
+      node_id:
+        type: string
+      target_node_id:
+        type: string
+      browser_device_id:
+        type: string
+      device_id:
+        type: string
+      webspace_id:
+        type: string
+  output_schema:
+    type: object
+- name: set_device_lifetime
+  description: Set the access lifetime for a browser, member, or device link.
+  entry: handlers.main:set_device_lifetime
+  input_schema:
+    type: object
+    properties:
+      preset:
+        type: string
+      device_ref:
+        type: string
+      node_id:
+        type: string
+      target_node_id:
+        type: string
+      browser_device_id:
+        type: string
+      device_id:
+        type: string
+      webspace_id:
+        type: string
+  output_schema:
+    type: object
+- name: detach_device
+  description: Detach a browser, member, or device access link.
+  entry: handlers.main:detach_device
+  input_schema:
+    type: object
+    properties:
+      device_ref:
+        type: string
+      node_id:
+        type: string
+      target_node_id:
+        type: string
+      browser_device_id:
+        type: string
+      device_id:
+        type: string
+      webspace_id:
+        type: string
+  output_schema:
+    type: object
+- name: get_device_settings
+  description: Return settings/action metadata for a browser, member, or device link.
+  entry: handlers.main:get_device_settings
+  input_schema:
+    type: object
+    properties:
+      device_ref:
+        type: string
+      node_id:
+        type: string
+      target_node_id:
+        type: string
+      browser_device_id:
+        type: string
+      device_id:
+        type: string
+      webspace_id:
+        type: string
+  output_schema:
+    type: object
+- name: adopt_device
+  description: Adopt a temporary browser, member, or device link into a stable access
+    profile.
+  entry: handlers.main:adopt_device
+  input_schema:
+    type: object
+    properties:
+      name:
+        type:
+        - string
+        - 'null'
+      preset:
+        type: string
+      device_ref:
+        type: string
+      node_id:
+        type: string
+      target_node_id:
+        type: string
+      browser_device_id:
+        type: string
+      device_id:
+        type: string
+      webspace_id:
+        type: string
+  output_schema:
+    type: object
 exports: {}
-updated_at: '2026-05-17T09:23:30+00:00'
+updated_at: '2026-05-20T17:34:03+00:00'
 

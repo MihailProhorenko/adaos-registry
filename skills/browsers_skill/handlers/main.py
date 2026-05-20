@@ -49,11 +49,11 @@ _DATA_PROJECTION_ENTRIES = [
     {"scope": "subnet", "slot": "browsers.current_name", "targets": [{"backend": "yjs", "path": "data/browsers/current_name"}]},
 ]
 _PROJECTION_SLOTS = [
-    ProjectionSlot("browsers.summary", "data/browsers/summary"),
-    ProjectionSlot("browsers.devices", "data/browsers/devices"),
-    ProjectionSlot("browsers.clients", "data/browsers/clients"),
-    ProjectionSlot("browsers.current_summary", "data/browsers/current_summary"),
-    ProjectionSlot("browsers.current_name", "data/browsers/current_name"),
+    ProjectionSlot("browsers.summary", "data/browsers/summary", demand="always"),
+    ProjectionSlot("browsers.devices", "data/browsers/devices", demand="always"),
+    ProjectionSlot("browsers.clients", "data/browsers/clients", demand="always"),
+    ProjectionSlot("browsers.current_summary", "data/browsers/current_summary", demand="always"),
+    ProjectionSlot("browsers.current_name", "data/browsers/current_name", demand="always"),
 ]
 _PROJECTION_SLOT_BY_NAME = {slot.name: slot for slot in _PROJECTION_SLOTS}
 _PROJECTION_RUNTIME = ProjectionRuntime(
@@ -82,11 +82,11 @@ def _build_registered_stream_payload(context: ProjectionContext) -> Any | None:
 _STREAM_RUNTIME = StreamRuntime(
     "browsers_skill",
     receivers=[
-        StreamReceiver("browsers.summary", build=_build_registered_stream_payload),
-        StreamReceiver("browsers.devices", build=_build_registered_stream_payload),
-        StreamReceiver("browsers.clients", build=_build_registered_stream_payload),
-        StreamReceiver("browsers.current_summary", build=_build_registered_stream_payload),
-        StreamReceiver("browsers.current_name", build=_build_registered_stream_payload),
+        StreamReceiver("browsers.summary", build=_build_registered_stream_payload, min_interval_s=0.25),
+        StreamReceiver("browsers.devices", build=_build_registered_stream_payload, min_interval_s=0.25),
+        StreamReceiver("browsers.clients", build=_build_registered_stream_payload, min_interval_s=0.25),
+        StreamReceiver("browsers.current_summary", build=_build_registered_stream_payload, min_interval_s=0.25),
+        StreamReceiver("browsers.current_name", build=_build_registered_stream_payload, min_interval_s=0.25),
     ],
     stream_publish=_sdk_stream_publish,
 )
