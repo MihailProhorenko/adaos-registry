@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-05-20T15:42:59+00:00",
+  "updated_at": "2026-05-20T17:33:52+00:00",
   "skills": [
     {
       "kind": "skill",
@@ -375,8 +375,8 @@
       "kind": "skill",
       "id": "voice_chat_skill",
       "name": "voice_chat_skill",
-      "version": "0.5.2",
-      "updated_at": "2026-05-12T10:34:36+00:00",
+      "version": "0.6.1",
+      "updated_at": "2026-05-20T17:33:52+00:00",
       "path": "skills/voice_chat_skill",
       "manifest": "skills/voice_chat_skill/skill.yaml",
       "source": {
@@ -388,7 +388,7 @@
         "name": "voice_chat_skill",
         "id": "voice_chat_skill"
       },
-      "description": "Voice chat bridge for web_desktop (text in -> publish chat + TTS via io.out.*; RouterService projects into Yjs by webspace_id).",
+      "description": "Voice chat bridge for web_desktop (text in -> publish chat + TTS via io.out.*; compact state goes through YJS and chat history goes through a stream receiver).",
       "runtime_python": "3.11",
       "tools_count": 2
     },

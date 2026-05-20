@@ -6,10 +6,12 @@ from pathlib import Path
 from typing import Any, Mapping
 import logging
 
-from adaos.sdk.core.decorators import tool
-from adaos.sdk.data import ctx_subnet
+from adaos.sdk.core.decorators import subscribe, tool
+from adaos.sdk.data import ProjectionContext, StreamReceiver, StreamRuntime, ctx_subnet
+from adaos.sdk.io import stream_publish
 from adaos.sdk.io.out import chat_append, say
 from adaos.services.agent_context import get_ctx
+from adaos.services.yjs.doc import get_ydoc
 from adaos.services.yjs.webspace import default_webspace_id
 from adaos.skills.runtime_runner import execute_tool
 
@@ -60,7 +62,23 @@ _DATA_PROJECTION_ENTRIES = [
     },
 ]
 _MAX_MESSAGES = 80
+_STREAM_TAIL_MAX_MESSAGES = 80
+_VOICE_TAIL_RECEIVER = "voice_chat.messages"
 _STATE_BY_KEY: dict[str, dict[str, Any]] = {}
+
+
+def _build_tail_stream_payload(context: ProjectionContext) -> dict[str, Any]:
+    state = _state_for(context.webspace_id or default_webspace_id(), context.node_id)
+    return _tail_stream_payload(state)
+
+
+_STREAM_RUNTIME = StreamRuntime(
+    "voice_chat_skill",
+    receivers=[
+        StreamReceiver(_VOICE_TAIL_RECEIVER, build=_build_tail_stream_payload),
+    ],
+    stream_publish=stream_publish,
+)
 
 
 def _webspace_id_from_meta(meta: Mapping[str, Any] | None) -> str:
@@ -86,6 +104,83 @@ def _state_for(webspace_id: str, target_node_id: str | None = None) -> dict[str,
     return state
 
 
+def _bounded_messages(raw: Any, *, limit: int = _MAX_MESSAGES) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    messages: list[dict[str, Any]] = []
+    for item in raw[-limit:]:
+        if not isinstance(item, Mapping):
+            continue
+        text = str(item.get("text") or "")
+        if len(text) > 2000:
+            text = text[:2000] + "..."
+        messages.append(
+            {
+                "id": str(item.get("id") or ""),
+                "from": str(item.get("from") or "hub"),
+                "text": text,
+                "ts": item.get("ts"),
+            }
+        )
+    return messages
+
+
+def _compact_state_payload(state: Mapping[str, Any]) -> dict[str, Any]:
+    messages = _bounded_messages(state.get("messages"), limit=_MAX_MESSAGES)
+    last = messages[-1] if messages else None
+    return {
+        "status": "ready" if messages else "empty",
+        "message_count": len(messages),
+        "last_message": last,
+        "last_refresh_ts": state.get("last_refresh_ts") or time.time(),
+        "stream_ref": _VOICE_TAIL_RECEIVER,
+    }
+
+
+def _tail_stream_payload(state: Mapping[str, Any]) -> dict[str, Any]:
+    messages = _bounded_messages(state.get("messages"), limit=_STREAM_TAIL_MAX_MESSAGES)
+    return {
+        "messages": messages,
+        "last_refresh_ts": state.get("last_refresh_ts") or time.time(),
+        "message_count": len(messages),
+    }
+
+
+def _legacy_state_from_ydoc(webspace_id: str, target_node_id: str | None = None) -> dict[str, Any] | None:
+    try:
+        with get_ydoc(webspace_id, read_only=True, load_mark_roots=["data"]) as ydoc:
+            raw_data = ydoc.get_map("data").to_json()
+    except TypeError:
+        try:
+            with get_ydoc(webspace_id) as ydoc:
+                raw_data = ydoc.get_map("data").to_json()
+        except Exception:
+            return None
+    except Exception:
+        return None
+    if not isinstance(raw_data, Mapping):
+        return None
+    node_id = str(target_node_id or "").strip()
+    if node_id:
+        nodes = raw_data.get("nodes")
+        if isinstance(nodes, Mapping):
+            node_payload = nodes.get(node_id)
+            if isinstance(node_payload, Mapping):
+                voice = node_payload.get("voice_chat")
+                if isinstance(voice, Mapping):
+                    return {
+                        "messages": _bounded_messages(voice.get("messages"), limit=_MAX_MESSAGES),
+                        "last_refresh_ts": voice.get("last_refresh_ts") or time.time(),
+                    }
+    voice = raw_data.get("voice_chat")
+    if isinstance(voice, Mapping):
+        return {
+            "messages": _bounded_messages(voice.get("messages"), limit=_MAX_MESSAGES),
+            "last_refresh_ts": voice.get("last_refresh_ts") or time.time(),
+        }
+    return None
+
+
 def _message(from_: str, text: str) -> dict[str, Any]:
     ts = time.time()
     return {
@@ -109,14 +204,22 @@ def _ensure_skill_data_projections() -> None:
 def _project_state(webspace_id: str, target_node_id: str | None = None) -> None:
     _ensure_skill_data_projections()
     state = _state_for(webspace_id, target_node_id)
-    payload = {
-        "messages": list(state.get("messages") or [])[-_MAX_MESSAGES:],
-        "last_refresh_ts": state.get("last_refresh_ts") or time.time(),
-    }
+    payload = _compact_state_payload(state)
     try:
         ctx_subnet.set("voice_chat.state", payload, webspace_id=webspace_id)
     except Exception as exc:
         _log.warning("voice_chat projection failed webspace=%s error=%s", webspace_id, exc)
+
+
+def _publish_tail_stream(webspace_id: str, target_node_id: str | None = None, *, force: bool = False) -> None:
+    state = _state_for(webspace_id, target_node_id)
+    _STREAM_RUNTIME.publish_snapshot(
+        _VOICE_TAIL_RECEIVER,
+        _tail_stream_payload(state),
+        webspace_id=webspace_id,
+        force=force,
+        meta={"target_node_id": target_node_id} if target_node_id else None,
+    )
 
 
 def _append_projected_message(
@@ -132,6 +235,7 @@ def _append_projected_message(
     state["messages"] = messages[-_MAX_MESSAGES:]
     state["last_refresh_ts"] = time.time()
     _project_state(webspace_id, target_node_id)
+    _publish_tail_stream(webspace_id, target_node_id)
 
 
 def _append_reply(reply: str, *, webspace_id: str, target_node_id: str | None) -> None:
@@ -277,9 +381,44 @@ def get_snapshot(
     selected_node_id = str(target_node_id or node_id or "").strip() or None
     selected_webspace = str(webspace_id or default_webspace_id()).strip() or default_webspace_id()
     snapshot = dict(_state_for(selected_webspace, selected_node_id))
+    if not snapshot.get("messages"):
+        legacy = _legacy_state_from_ydoc(selected_webspace, selected_node_id)
+        if legacy:
+            state = _state_for(selected_webspace, selected_node_id)
+            state["messages"] = _bounded_messages(legacy.get("messages"), limit=_MAX_MESSAGES)
+            state["last_refresh_ts"] = legacy.get("last_refresh_ts") or time.time()
+            snapshot = dict(state)
     _project_state(selected_webspace, selected_node_id)
+    _publish_tail_stream(selected_webspace, selected_node_id, force=True)
     return {
         "voice_chat": snapshot,
         **snapshot,
     }
+
+
+@subscribe("webio.stream.snapshot.requested")
+def on_webio_stream_snapshot_requested(evt: Any) -> None:
+    payload = getattr(evt, "payload", evt)
+    if not isinstance(payload, Mapping):
+        return
+    if str(payload.get("receiver") or "").strip() != _VOICE_TAIL_RECEIVER:
+        return
+    webspace_id = str(payload.get("webspace_id") or payload.get("workspace_id") or default_webspace_id()).strip() or default_webspace_id()
+    target_node_id = str(payload.get("target_node_id") or payload.get("node_id") or "").strip() or None
+    if not _state_for(webspace_id, target_node_id).get("messages"):
+        legacy = _legacy_state_from_ydoc(webspace_id, target_node_id)
+        if legacy:
+            state = _state_for(webspace_id, target_node_id)
+            state["messages"] = _bounded_messages(legacy.get("messages"), limit=_MAX_MESSAGES)
+            state["last_refresh_ts"] = legacy.get("last_refresh_ts") or time.time()
+    _publish_tail_stream(webspace_id, target_node_id, force=True)
+
+
+@subscribe("webio.stream.subscription.changed")
+def on_webio_stream_subscription_changed(evt: Any) -> None:
+    payload = getattr(evt, "payload", evt)
+    if isinstance(payload, Mapping) and str(payload.get("action") or "").strip().lower() == "unsubscribed":
+        _STREAM_RUNTIME.handle_subscription_changed(evt, receiver_prefix="voice_chat.")
+        return
+    on_webio_stream_snapshot_requested(evt)
 

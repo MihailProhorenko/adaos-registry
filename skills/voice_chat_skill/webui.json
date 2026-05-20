@@ -1,5 +1,40 @@
 {
 	"$schema": "../../../../src/adaos/abi/webui.v1.schema.json",
+	"webio": {
+		"receivers": {
+			"voice_chat.messages": {
+				"mode": "replace",
+				"transport": "hub",
+				"snapshotPolicy": "on_subscribe",
+				"sequenceField": "last_refresh_ts",
+				"updatedAtField": "last_refresh_ts",
+				"budget": {
+					"maxPayloadBytes": 32768,
+					"maxPublishHz": 8,
+					"maxSnapshotHz": 1,
+					"maxItems": 80
+				},
+				"guardVisibility": {
+					"degradedState": "Keep last local chat tail; YJS only carries compact voice status.",
+					"log": "service.voice_chat_skill.runtime.log",
+					"quarantine": false,
+					"metric": "webio_stream_guard.voice_chat.messages"
+				},
+				"route": {
+					"kind": "stream",
+					"owner": "skill:voice_chat_skill",
+					"surface": "scenario:web_desktop.voice_chat.messages",
+					"firstPaint": "Empty chat list until stream snapshot arrives.",
+					"recovery": "snapshot requested on stream subscribe"
+				},
+				"initialState": {
+					"messages": [],
+					"last_refresh_ts": 0,
+					"message_count": 0
+				}
+			}
+		}
+	},
 	"apps": [
 		{
 			"id": "voice_chat_app",
@@ -51,8 +86,9 @@
 							"area": "main",
 							"title": "Voice chat",
 							"dataSource": {
-								"kind": "y",
-								"path": "data/voice_chat",
+								"kind": "stream",
+								"receiver": "voice_chat.messages",
+								"transport": "hub",
 								"scope": "shared"
 							},
 							"inputs": {
@@ -74,7 +110,11 @@
 	},
 	"ydoc_defaults": {
 		"data/voice_chat": {
-			"messages": []
+			"status": "empty",
+			"message_count": 0,
+			"last_message": null,
+			"last_refresh_ts": 0,
+			"stream_ref": "voice_chat.messages"
 		}
 	},
 	"widgets": [],

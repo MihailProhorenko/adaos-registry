@@ -1,14 +1,61 @@
 name: voice_chat_skill
-version: 0.5.2
+version: 0.6.1
 description: Voice chat bridge for web_desktop (text in -> publish chat + TTS via
-  io.out.*; RouterService projects into Yjs by webspace_id).
+  io.out.*; compact state goes through YJS and chat history goes through a stream
+  receiver).
 runtime:
   python: '3.11'
 events:
-  subscribe: []
+  subscribe:
+  - webio.stream.snapshot.requested
+  - webio.stream.subscription.changed
   publish:
   - io.out.chat.append
   - io.out.say
+  - io.out.stream.publish
+data_routes:
+- surface: scenario:web_desktop.voice_chat.status
+  route: yjs
+  owner: skill:voice_chat_skill
+  projection_slot: voice_chat.state
+  path: data/voice_chat
+  first_paint: compact voice chat status from the last YJS projection
+  recovery: YJS replay restores last message metadata; stream receiver restores the
+    chat tail on subscribe.
+  update_source:
+  - voice_chat_skill.handle_text
+  budget:
+    max_payload_bytes: 4096
+    max_publish_hz: 2
+    coalesce_ms: 250
+    snapshot_policy: none
+  guard_visibility:
+    degraded_state: Chat input stays available and the UI keeps the last compact status.
+    log: service.voice_chat_skill.runtime.log
+    quarantine: true
+    metric: yjs_owner_guard.voice_chat.state
+- surface: scenario:web_desktop.voice_chat.messages
+  route: stream
+  owner: skill:voice_chat_skill
+  receiver: voice_chat.messages
+  first_paint: empty chat list until a stream snapshot is requested
+  recovery: Stream snapshot request republishes the bounded in-memory tail or migrates
+    the old YJS tail.
+  update_source:
+  - webio.stream.snapshot.requested
+  - voice_chat_skill.handle_text
+  budget:
+    max_payload_bytes: 32768
+    max_publish_hz: 8
+    coalesce_ms: 100
+    max_items: 80
+    snapshot_policy: on_subscribe
+  guard_visibility:
+    degraded_state: Chat list keeps the last local stream state; YJS only shows compact
+      status.
+    log: service.voice_chat_skill.runtime.log
+    quarantine: false
+    metric: webio_stream_guard.voice_chat.messages
 data_projections:
 - scope: subnet
   slot: voice_chat.state
@@ -37,5 +84,5 @@ tools:
     additionalProperties: true
   output_schema:
     type: object
-updated_at: '2026-05-12T10:34:36+00:00'
+updated_at: '2026-05-20T17:33:52+00:00'
 
