@@ -5,6 +5,7 @@
       "infrascope.overview.*": {
         "mode": "replace",
         "transport": "hub",
+        "snapshotPolicy": "on_subscribe",
         "initialState": [],
         "budget": { "maxPayloadBytes": 32768, "maxPublishHz": 1, "maxSnapshotHz": 1, "maxItems": 128 },
         "guardVisibility": { "degradedState": "Keep last compact overview rows and open inspector details on demand.", "log": "service.infrascope_skill.runtime.log", "quarantine": false, "metric": "webio_stream_guard.infrascope.overview" },
@@ -13,6 +14,7 @@
       "infrascope.inventory.*": {
         "mode": "replace",
         "transport": "hub",
+        "snapshotPolicy": "on_subscribe",
         "initialState": [],
         "budget": { "maxPayloadBytes": 65536, "maxPublishHz": 0.5, "maxSnapshotHz": 1, "maxItems": 256 },
         "guardVisibility": { "degradedState": "Keep last compact inventory rows; full object state stays in inspector streams.", "log": "service.infrascope_skill.runtime.log", "quarantine": false, "metric": "webio_stream_guard.infrascope.inventory" },
@@ -21,6 +23,7 @@
       "infrascope.operations.active": {
         "mode": "replace",
         "transport": "hub",
+        "snapshotPolicy": "on_subscribe",
         "initialState": [],
         "budget": { "maxPayloadBytes": 16384, "maxPublishHz": 1, "maxSnapshotHz": 1, "maxItems": 64 },
         "guardVisibility": { "degradedState": "Keep last active operation rows and surface stream guard pressure.", "log": "service.infrascope_skill.runtime.log", "quarantine": false, "metric": "webio_stream_guard.infrascope.operations.active" },
@@ -29,6 +32,7 @@
       "infrascope.inspector.*": {
         "mode": "replace",
         "transport": "hub",
+        "snapshotPolicy": "on_subscribe",
         "initialState": {},
         "budget": { "maxPayloadBytes": 65536, "maxPublishHz": 1, "maxSnapshotHz": 1, "maxItems": 1 },
         "guardVisibility": { "degradedState": "Keep last selected-object inspector payload.", "log": "service.infrascope_skill.runtime.log", "quarantine": false, "metric": "webio_stream_guard.infrascope.inspector" },
@@ -37,6 +41,7 @@
       "infrascope.inspector_field.*": {
         "mode": "replace",
         "transport": "hub",
+        "snapshotPolicy": "on_subscribe",
         "initialState": {},
         "budget": { "maxPayloadBytes": 65536, "maxPublishHz": 1, "maxSnapshotHz": 1, "maxItems": 1 },
         "guardVisibility": { "degradedState": "Keep last selected inspector field and show stale state if rebuilding.", "log": "service.infrascope_skill.runtime.log", "quarantine": false, "metric": "webio_stream_guard.infrascope.inspector_field" },

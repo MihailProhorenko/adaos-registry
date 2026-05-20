@@ -1,5 +1,5 @@
 name: infrascope_skill
-version: 0.28.3
+version: 0.28.5
 entry: handlers/main.py
 runtime:
   python: '3.11'
@@ -159,6 +159,27 @@ data_routes:
     log: service.infrascope_skill.runtime.log
     quarantine: false
     metric: webio_stream_guard.infrascope.inventory
+- surface: scenario:infrascope.operations.active
+  route: stream
+  owner: skill:infrascope_skill
+  receiver: infrascope.operations.active
+  first_paint: empty active operations list until the overview subscribes
+  recovery: Stream snapshot request rebuilds only active operations without forcing
+    the full overview snapshot.
+  update_source:
+  - webio.stream.snapshot.requested
+  - operations.
+  budget:
+    max_payload_bytes: 16384
+    max_publish_hz: 1
+    coalesce_ms: 500
+    max_items: 64
+    snapshot_policy: on_subscribe
+  guard_visibility:
+    degraded_state: Keep last active operations rows; operation details stay on demand.
+    log: service.infrascope_skill.runtime.log
+    quarantine: false
+    metric: webio_stream_guard.infrascope.operations.active
 - surface: scenario:infrascope.inspector
   route: stream
   owner: skill:infrascope_skill
@@ -181,6 +202,28 @@ data_routes:
     log: service.infrascope_skill.runtime.log
     quarantine: false
     metric: webio_stream_guard.infrascope.inspector
+- surface: scenario:infrascope.inspector_field
+  route: stream
+  owner: skill:infrascope_skill
+  receiver: infrascope.inspector_field.*
+  first_paint: empty inspector field until the active tab subscribes
+  recovery: Stream snapshot request rebuilds only the selected inspector field.
+  update_source:
+  - webio.stream.snapshot.requested
+  - desktop.scenario.set
+  - subnet.member.snapshot.changed
+  budget:
+    max_payload_bytes: 65536
+    max_publish_hz: 1
+    coalesce_ms: 500
+    max_items: 1
+    snapshot_policy: on_subscribe
+  guard_visibility:
+    degraded_state: Inspector tab keeps stale selected-field details rather than blocking
+      the overview.
+    log: service.infrascope_skill.runtime.log
+    quarantine: false
+    metric: webio_stream_guard.infrascope.inspector_field
 data_projections:
 - scope: subnet
   slot: infrascope.snapshot
@@ -304,5 +347,5 @@ tools:
     type: object
 exports: {}
 prototype: default
-updated_at: '2026-05-19T05:43:54+00:00'
+updated_at: '2026-05-20T17:34:29+00:00'
 
