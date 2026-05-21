@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Mapping
@@ -43,6 +45,15 @@ _DATA_PROJECTION_ENTRIES = [
 ]
 _log = logging.getLogger("skills.new_face_vision_skill")
 _engine: Any = None
+_ENGINE_LOCK = threading.RLock()
+_projection_fingerprints: dict[str, str] = {}
+_stream_fingerprints: dict[str, str] = {}
+_last_frame_payload_by_webspace: dict[str, dict[str, Any]] = {}
+_metrics_points_by_webspace: dict[str, list[dict[str, Any]]] = {}
+_last_progress_payload_by_webspace: dict[str, dict[str, Any]] = {}
+_METRICS_HISTORY_MAX = 120
+_playback_stop: threading.Event | None = None
+_playback_thread: threading.Thread | None = None
 
 
 def _state_dir() -> Path:
@@ -93,18 +104,39 @@ def _ensure_skill_data_projections() -> None:
         _log.debug("projection entries are not available yet", exc_info=True)
 
 
+def _fingerprint(value: Any) -> str:
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    except Exception:
+        return repr(value)
+
+
+def _set_projection_if_changed(slot: str, value: Any, *, webspace_id: str) -> None:
+    key = f"{webspace_id}:{slot}"
+    fingerprint = _fingerprint(value)
+    if _projection_fingerprints.get(key) == fingerprint:
+        return
+    _projection_fingerprints[key] = fingerprint
+    ctx_subnet.set(slot, value, webspace_id=webspace_id)
+
+
 def _project(webspace_id: str | None = None) -> None:
     _ensure_skill_data_projections()
     selected_webspace = str(webspace_id or default_webspace_id()).strip() or default_webspace_id()
-    snapshot = _engine_instance().snapshot()
+    with _ENGINE_LOCK:
+        snapshot = _engine_instance().snapshot()
     pushed = False
     try:
         try:
             pushed = bool(set_current_skill(SKILL_NAME))
         except Exception:
             pushed = False
-        ctx_subnet.set("new_face_vision.current", snapshot, webspace_id=selected_webspace)
-        ctx_subnet.set("new_face_vision.history", list(snapshot.get("history") or []), webspace_id=selected_webspace)
+        _set_projection_if_changed("new_face_vision.current", snapshot, webspace_id=selected_webspace)
+        _set_projection_if_changed(
+            "new_face_vision.history",
+            list(snapshot.get("history") or []),
+            webspace_id=selected_webspace,
+        )
     except Exception:
         _log.debug("new_face_vision projection failed", exc_info=True)
     finally:
@@ -122,12 +154,126 @@ def _publish_event(topic: str, payload: dict[str, Any]) -> None:
         _log.debug("failed to publish %s", topic, exc_info=True)
 
 
-def _publish_stream(receiver: str, data: Any, *, webspace_id: str | None = None) -> None:
+def _publish_stream(receiver: str, data: Any, *, webspace_id: str | None = None, force: bool = False) -> None:
     selected_webspace = str(webspace_id or default_webspace_id()).strip() or default_webspace_id()
+    key = f"{selected_webspace}:{receiver}"
+    fingerprint = _fingerprint(data)
+    if not force and _stream_fingerprints.get(key) == fingerprint:
+        return
+    _stream_fingerprints[key] = fingerprint
     try:
         stream_publish(receiver, data, _meta={"webspace_id": selected_webspace})
     except Exception:
         _log.debug("failed to publish stream receiver=%s", receiver, exc_info=True)
+
+
+def _remember_frame_payload(webspace_id: str | None, payload: dict[str, Any]) -> None:
+    selected_webspace = str(webspace_id or default_webspace_id()).strip() or default_webspace_id()
+    _last_frame_payload_by_webspace[selected_webspace] = dict(payload)
+
+
+def _remember_metrics_payload(webspace_id: str | None, payload: dict[str, Any]) -> None:
+    selected_webspace = str(webspace_id or default_webspace_id()).strip() or default_webspace_id()
+    points = _metrics_points_by_webspace.setdefault(selected_webspace, [])
+    points.append(dict(payload))
+    if len(points) > _METRICS_HISTORY_MAX:
+        del points[:-_METRICS_HISTORY_MAX]
+
+
+def _remember_progress_payload(webspace_id: str | None, payload: dict[str, Any]) -> None:
+    selected_webspace = str(webspace_id or default_webspace_id()).strip() or default_webspace_id()
+    _last_progress_payload_by_webspace[selected_webspace] = dict(payload)
+
+
+def _publish_progress(snapshot: Mapping[str, Any], *, ok: bool, webspace_id: str | None, error: Mapping[str, Any] | None = None) -> None:
+    payload = _progress_payload(snapshot, ok=ok, error=error)
+    _remember_progress_payload(webspace_id, payload)
+    _publish_stream(PROGRESS_RECEIVER, payload, webspace_id=webspace_id)
+
+
+def _compact_frame_event(result: Mapping[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in dict(result).items() if k != "preview_base64"}
+
+
+def _publish_frame_result(result: Mapping[str, Any], *, webspace_id: str | None = None) -> None:
+    engine = _engine_instance()
+    frame_payload = engine.frame_stream_payload(result)
+    metrics_payload = engine.metrics_stream_payload(result)
+    _remember_frame_payload(webspace_id, frame_payload)
+    _remember_metrics_payload(webspace_id, metrics_payload)
+    _publish_stream(FRAME_RECEIVER, frame_payload, webspace_id=webspace_id)
+    _publish_stream(METRICS_RECEIVER, metrics_payload, webspace_id=webspace_id)
+    _publish_event("new_face_vision.frame", _compact_frame_event(result))
+
+
+def _playback_fps(value: Any) -> float:
+    try:
+        parsed = float(value)
+    except Exception:
+        parsed = 5.0
+    if parsed < 0.5:
+        parsed = 0.5
+    if parsed > 30:
+        parsed = 30
+    return round(parsed, 2)
+
+
+def _stop_playback_thread(*, wait: bool = False) -> None:
+    global _playback_stop, _playback_thread
+    stop = _playback_stop
+    thread = _playback_thread
+    if stop is not None:
+        stop.set()
+    if wait and thread is not None and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(timeout=2.0)
+    if thread is None or not thread.is_alive():
+        _playback_thread = None
+        _playback_stop = None
+
+
+def _start_playback_thread(*, webspace_id: str | None, fps: float) -> None:
+    global _playback_stop, _playback_thread
+    if _playback_thread is not None and _playback_thread.is_alive():
+        return
+    stop = threading.Event()
+    _playback_stop = stop
+    _playback_thread = threading.Thread(
+        target=_playback_loop,
+        args=(str(webspace_id or default_webspace_id()).strip() or default_webspace_id(), fps, stop),
+        daemon=True,
+        name="new-face-vision-playback",
+    )
+    _playback_thread.start()
+
+
+def _playback_loop(webspace_id: str, fps: float, stop: threading.Event) -> None:
+    interval = max(0.03, 1.0 / max(0.5, fps))
+    while not stop.is_set():
+        try:
+            with _ENGINE_LOCK:
+                engine = _engine_instance()
+                snapshot = engine.snapshot()
+                playback = snapshot.get("playback") if isinstance(snapshot.get("playback"), Mapping) else {}
+                if str(playback.get("mode") or "").lower() != "playing":
+                    break
+                result = engine.process_frame(None)
+            if result.get("ok"):
+                _publish_frame_result(result, webspace_id=webspace_id)
+            _project(webspace_id=webspace_id)
+            with _ENGINE_LOCK:
+                snapshot = _engine_instance().snapshot()
+            if not result.get("ok"):
+                error = _normalize_error_payload(result.get("error"), code="playback_failed")
+                _publish_progress(snapshot, ok=False, error=error, webspace_id=webspace_id)
+                _publish_event("new_face_vision.error", {"ok": False, "error": error, "ts": time.time()})
+                with _ENGINE_LOCK:
+                    _engine_instance().set_playback("paused")
+                _project(webspace_id=webspace_id)
+                break
+            stop.wait(interval)
+        except Exception as exc:
+            _handle_error(exc, webspace_id=webspace_id)
+            break
 
 
 def _normalize_error_payload(
@@ -156,12 +302,13 @@ def _normalize_error_payload(
 
 
 def _set_engine_error(error: Mapping[str, Any]) -> None:
-    engine = _engine_instance()
-    normalized = dict(error)
-    engine.last_error = normalized
-    operation = getattr(engine, "_operation", None)
-    if isinstance(operation, dict):
-        engine._operation = {**operation, "error": normalized}
+    with _ENGINE_LOCK:
+        engine = _engine_instance()
+        normalized = dict(error)
+        engine.last_error = normalized
+        operation = getattr(engine, "_operation", None)
+        if isinstance(operation, dict):
+            engine._operation = {**operation, "error": normalized}
 
 
 def _progress_payload(
@@ -238,14 +385,11 @@ def _result_with_snapshot(result: dict[str, Any], *, webspace_id: str | None = N
         }
         _set_engine_error(result["error"])
     _project(webspace_id=webspace_id)
-    snapshot = _engine_instance().snapshot()
+    with _ENGINE_LOCK:
+        snapshot = _engine_instance().snapshot()
     operation = snapshot.get("operation") if isinstance(snapshot.get("operation"), Mapping) else {}
     if operation.get("id") or not ok:
-        _publish_stream(
-            PROGRESS_RECEIVER,
-            _progress_payload(snapshot, ok=ok, error=result.get("error") if not ok else None),
-            webspace_id=webspace_id,
-        )
+        _publish_progress(snapshot, ok=ok, error=result.get("error") if not ok else None, webspace_id=webspace_id)
     if not ok:
         _publish_event(
             "new_face_vision.error",
@@ -258,17 +402,20 @@ def _handle_error(exc: Exception, *, webspace_id: str | None = None) -> dict[str
     error = _normalize_error_payload(exc, code="handler_exception")
     _set_engine_error(error)
     _project(webspace_id=webspace_id)
-    snapshot = _engine_instance().snapshot()
+    with _ENGINE_LOCK:
+        snapshot = _engine_instance().snapshot()
     payload = {"ok": False, "error": error, "current": snapshot, "ts": time.time()}
     _publish_event("new_face_vision.error", payload)
-    _publish_stream(PROGRESS_RECEIVER, _progress_payload(snapshot, ok=False, error=error), webspace_id=webspace_id)
+    _publish_progress(snapshot, ok=False, error=error, webspace_id=webspace_id)
     return payload
 
 
 @tool("new_face_vision_status")
 def new_face_vision_status(webspace_id: str | None = None, **_: Any) -> dict[str, Any]:
     _project(webspace_id=webspace_id)
-    return {"ok": True, "current": _engine_instance().snapshot()}
+    with _ENGINE_LOCK:
+        snapshot = _engine_instance().snapshot()
+    return {"ok": True, "current": snapshot}
 
 
 @tool("new_face_vision_configure")
@@ -284,15 +431,16 @@ def new_face_vision_configure(
     **_: Any,
 ) -> dict[str, Any]:
     try:
-        result = _engine_instance().configure(
-            model_path=model_path,
-            frames_path=frames_path,
-            masks_path=masks_path,
-            metadata_path=metadata_path,
-            threshold=threshold,
-            warning_threshold=warning_threshold,
-            alarm_threshold=alarm_threshold,
-        )
+        with _ENGINE_LOCK:
+            result = _engine_instance().configure(
+                model_path=model_path,
+                frames_path=frames_path,
+                masks_path=masks_path,
+                metadata_path=metadata_path,
+                threshold=threshold,
+                warning_threshold=warning_threshold,
+                alarm_threshold=alarm_threshold,
+            )
         return _result_with_snapshot(result, webspace_id=webspace_id)
     except Exception as exc:
         return _handle_error(exc, webspace_id=webspace_id)
@@ -308,7 +456,8 @@ def new_face_vision_load_model(
 ) -> dict[str, Any]:
     try:
         resolved_path = _resolve_path(path, artifact_ref, file, **payload)
-        result = _engine_instance().load_model(resolved_path, source_ref=_source_ref(path, artifact_ref, file, **payload))
+        with _ENGINE_LOCK:
+            result = _engine_instance().load_model(resolved_path, source_ref=_source_ref(path, artifact_ref, file, **payload))
         return _result_with_snapshot(result, webspace_id=webspace_id)
     except Exception as exc:
         return _handle_error(exc, webspace_id=webspace_id)
@@ -324,7 +473,9 @@ def new_face_vision_load_frames(
 ) -> dict[str, Any]:
     try:
         resolved_path = _resolve_path(path, artifact_ref, file, **payload)
-        result = _engine_instance().load_frames(resolved_path, source_ref=_source_ref(path, artifact_ref, file, **payload))
+        _metrics_points_by_webspace.pop(str(webspace_id or default_webspace_id()).strip() or default_webspace_id(), None)
+        with _ENGINE_LOCK:
+            result = _engine_instance().load_frames(resolved_path, source_ref=_source_ref(path, artifact_ref, file, **payload))
         return _result_with_snapshot(result, webspace_id=webspace_id)
     except Exception as exc:
         return _handle_error(exc, webspace_id=webspace_id)
@@ -340,7 +491,8 @@ def new_face_vision_load_masks(
 ) -> dict[str, Any]:
     try:
         resolved_path = _resolve_path(path, artifact_ref, file, **payload)
-        result = _engine_instance().load_masks(resolved_path, source_ref=_source_ref(path, artifact_ref, file, **payload))
+        with _ENGINE_LOCK:
+            result = _engine_instance().load_masks(resolved_path, source_ref=_source_ref(path, artifact_ref, file, **payload))
         return _result_with_snapshot(result, webspace_id=webspace_id)
     except Exception as exc:
         return _handle_error(exc, webspace_id=webspace_id)
@@ -356,7 +508,8 @@ def new_face_vision_load_metadata(
 ) -> dict[str, Any]:
     try:
         resolved_path = _resolve_path(path, artifact_ref, file, **payload)
-        result = _engine_instance().load_metadata(resolved_path, source_ref=_source_ref(path, artifact_ref, file, **payload))
+        with _ENGINE_LOCK:
+            result = _engine_instance().load_metadata(resolved_path, source_ref=_source_ref(path, artifact_ref, file, **payload))
         return _result_with_snapshot(result, webspace_id=webspace_id)
     except Exception as exc:
         return _handle_error(exc, webspace_id=webspace_id)
@@ -369,12 +522,13 @@ def new_face_vision_process_frame(
     **_: Any,
 ) -> dict[str, Any]:
     try:
-        engine = _engine_instance()
-        result = engine.process_frame(frame_idx)
+        with _ENGINE_LOCK:
+            engine = _engine_instance()
+            result = engine.process_frame(frame_idx)
         if result.get("ok"):
-            _publish_stream(FRAME_RECEIVER, engine.frame_stream_payload(result), webspace_id=webspace_id)
-            _publish_stream(METRICS_RECEIVER, engine.metrics_stream_payload(result), webspace_id=webspace_id)
-        _publish_event("new_face_vision.frame", {k: v for k, v in result.items() if k != "preview_base64"})
+            _publish_frame_result(result, webspace_id=webspace_id)
+        else:
+            _publish_event("new_face_vision.frame", _compact_frame_event(result))
         return _result_with_snapshot(result, webspace_id=webspace_id)
     except Exception as exc:
         return _handle_error(exc, webspace_id=webspace_id)
@@ -385,10 +539,69 @@ def new_face_vision_play_step(webspace_id: str | None = None, **_: Any) -> dict[
     return new_face_vision_process_frame(frame_idx=None, webspace_id=webspace_id)
 
 
+@tool("new_face_vision_play")
+def new_face_vision_play(fps: float | None = None, webspace_id: str | None = None, **_: Any) -> dict[str, Any]:
+    try:
+        selected_fps = _playback_fps(fps)
+        with _ENGINE_LOCK:
+            result = _engine_instance().set_playback("playing", fps=selected_fps)
+        _project(webspace_id=webspace_id)
+        _start_playback_thread(webspace_id=webspace_id, fps=selected_fps)
+        return _result_with_snapshot(result, webspace_id=webspace_id)
+    except Exception as exc:
+        return _handle_error(exc, webspace_id=webspace_id)
+
+
+@tool("new_face_vision_pause")
+def new_face_vision_pause(webspace_id: str | None = None, **_: Any) -> dict[str, Any]:
+    try:
+        _stop_playback_thread(wait=False)
+        with _ENGINE_LOCK:
+            result = _engine_instance().set_playback("paused")
+        return _result_with_snapshot(result, webspace_id=webspace_id)
+    except Exception as exc:
+        return _handle_error(exc, webspace_id=webspace_id)
+
+
+@tool("new_face_vision_stop")
+def new_face_vision_stop(webspace_id: str | None = None, **_: Any) -> dict[str, Any]:
+    try:
+        _stop_playback_thread(wait=True)
+        with _ENGINE_LOCK:
+            engine = _engine_instance()
+            result = engine.stop()
+            empty_frame = engine.empty_frame_stream_payload(label="Stopped")
+        _remember_frame_payload(webspace_id, empty_frame)
+        _publish_stream(FRAME_RECEIVER, empty_frame, webspace_id=webspace_id, force=True)
+        return _result_with_snapshot(result, webspace_id=webspace_id)
+    except Exception as exc:
+        return _handle_error(exc, webspace_id=webspace_id)
+
+
+@tool("new_face_vision_replay")
+def new_face_vision_replay(fps: float | None = None, webspace_id: str | None = None, **_: Any) -> dict[str, Any]:
+    try:
+        selected_fps = _playback_fps(fps)
+        _stop_playback_thread(wait=True)
+        selected_webspace = str(webspace_id or default_webspace_id()).strip() or default_webspace_id()
+        _metrics_points_by_webspace.pop(selected_webspace, None)
+        with _ENGINE_LOCK:
+            result = _engine_instance().replay(fps=selected_fps)
+        _project(webspace_id=webspace_id)
+        _start_playback_thread(webspace_id=webspace_id, fps=selected_fps)
+        return _result_with_snapshot(result, webspace_id=webspace_id)
+    except Exception as exc:
+        return _handle_error(exc, webspace_id=webspace_id)
+
+
 @tool("new_face_vision_reset")
 def new_face_vision_reset(webspace_id: str | None = None, **_: Any) -> dict[str, Any]:
     try:
-        result = _engine_instance().reset()
+        _stop_playback_thread(wait=True)
+        selected_webspace = str(webspace_id or default_webspace_id()).strip() or default_webspace_id()
+        _metrics_points_by_webspace.pop(selected_webspace, None)
+        with _ENGINE_LOCK:
+            result = _engine_instance().reset()
         return _result_with_snapshot(result, webspace_id=webspace_id)
     except Exception as exc:
         return _handle_error(exc, webspace_id=webspace_id)
@@ -397,7 +610,15 @@ def new_face_vision_reset(webspace_id: str | None = None, **_: Any) -> dict[str,
 @tool("new_face_vision_clear")
 def new_face_vision_clear(webspace_id: str | None = None, **_: Any) -> dict[str, Any]:
     try:
-        result = _engine_instance().clear()
+        _stop_playback_thread(wait=True)
+        selected_webspace = str(webspace_id or default_webspace_id()).strip() or default_webspace_id()
+        _metrics_points_by_webspace.pop(selected_webspace, None)
+        _last_frame_payload_by_webspace.pop(selected_webspace, None)
+        with _ENGINE_LOCK:
+            engine = _engine_instance()
+            result = engine.clear()
+            empty_frame = engine.empty_frame_stream_payload(label="No frame")
+        _publish_stream(FRAME_RECEIVER, empty_frame, webspace_id=webspace_id, force=True)
         return _result_with_snapshot(result, webspace_id=webspace_id)
     except Exception as exc:
         return _handle_error(exc, webspace_id=webspace_id)
@@ -432,9 +653,17 @@ def new_face_vision_action(id: str | None = None, value: Any = None, webspace_id
     try:
         if action in {"", "refresh", "status"}:
             return new_face_vision_status(webspace_id=selected_webspace)
-        if action in {"process_next", "play", "step"}:
+        if action in {"process_next", "step", "next"}:
             return new_face_vision_play_step(webspace_id=selected_webspace)
-        if action in {"replay", "reset", "stop"}:
+        if action == "play":
+            return new_face_vision_play(webspace_id=selected_webspace)
+        if action == "pause":
+            return new_face_vision_pause(webspace_id=selected_webspace)
+        if action == "stop":
+            return new_face_vision_stop(webspace_id=selected_webspace)
+        if action == "replay":
+            return new_face_vision_replay(webspace_id=selected_webspace)
+        if action == "reset":
             return new_face_vision_reset(webspace_id=selected_webspace)
         if action == "clear":
             return new_face_vision_clear(webspace_id=selected_webspace)
@@ -473,6 +702,40 @@ def on_new_face_vision_action(evt: Any) -> None:
 def on_new_face_vision_status_refresh(evt: Any) -> None:
     payload = _payload(evt)
     new_face_vision_status(webspace_id=_webspace_id_from_payload(payload))
+
+
+@subscribe("webio.stream.snapshot.requested")
+def on_webio_stream_snapshot_requested(evt: Any) -> None:
+    payload = _payload(evt)
+    receiver = str(payload.get("receiver") or "").strip()
+    if receiver not in {FRAME_RECEIVER, METRICS_RECEIVER, PROGRESS_RECEIVER}:
+        return
+    webspace_id = _webspace_id_from_payload(payload)
+    if receiver == FRAME_RECEIVER:
+        selected = str(webspace_id or default_webspace_id()).strip() or default_webspace_id()
+        with _ENGINE_LOCK:
+            fallback = _engine_instance().empty_frame_stream_payload()
+        _publish_stream(receiver, _last_frame_payload_by_webspace.get(selected) or fallback, webspace_id=webspace_id, force=True)
+        return
+    if receiver == METRICS_RECEIVER:
+        selected = str(webspace_id or default_webspace_id()).strip() or default_webspace_id()
+        for point in list(_metrics_points_by_webspace.get(selected) or []):
+            _publish_stream(receiver, point, webspace_id=webspace_id, force=True)
+        return
+    with _ENGINE_LOCK:
+        snapshot = _engine_instance().snapshot()
+    selected = str(webspace_id or default_webspace_id()).strip() or default_webspace_id()
+    payload = _last_progress_payload_by_webspace.get(selected) or _progress_payload(snapshot, ok=True)
+    _publish_stream(receiver, payload, webspace_id=webspace_id, force=True)
+
+
+@subscribe("webio.stream.subscription.changed")
+def on_webio_stream_subscription_changed(evt: Any) -> None:
+    payload = _payload(evt)
+    action = str(payload.get("action") or "").strip().lower()
+    if action == "unsubscribed":
+        return
+    on_webio_stream_snapshot_requested(payload)
 
 
 @subscribe("sys.ready")

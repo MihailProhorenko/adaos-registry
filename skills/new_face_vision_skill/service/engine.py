@@ -14,24 +14,30 @@ from typing import Any, Mapping
 
 try:
     import numpy as np
-except Exception:
+    _numpy_import_error = None
+except Exception as exc:
     np = None
+    _numpy_import_error = exc
 
 try:
     from PIL import Image
-except Exception:
+    _pillow_import_error = None
+except Exception as exc:
     Image = None
+    _pillow_import_error = exc
 
 try:
     import torch
     import torch.nn as nn
     import torchvision
     from torchvision.transforms import functional as TF
-except Exception:
+    _torch_import_error = None
+except Exception as exc:
     torch = None
     nn = None
     torchvision = None
     TF = None
+    _torch_import_error = exc
 
 _log = logging.getLogger("new_face_vision.engine")
 
@@ -56,6 +62,18 @@ class NewFaceVisionEngine:
         self._warning_threshold = 0.05
         self._alarm_threshold = 0.15
         self._prediction_cache = {}
+        self._run_id = 1
+        self._seq = 0
+        self._processed_frames = 0
+        self._dice_sum = 0.0
+        self._iou_sum = 0.0
+        self._target_fps = 5.0
+        self._playback: dict[str, Any] = {
+            "mode": "idle",
+            "fps": self._target_fps,
+            "run_id": self._run_id,
+            "updated_at": None,
+        }
         self._model_path = None
         self._files: dict[str, dict[str, Any] | None] = {
             "model": None,
@@ -87,14 +105,14 @@ class NewFaceVisionEngine:
         result = {"ok": True, "actions": []}
 
         if threshold is not None:
-            self._threshold = threshold
-            result["actions"].append(f"threshold={threshold}")
+            self._threshold = self._normalize_threshold(threshold, fallback=self._threshold)
+            result["actions"].append(f"threshold={self._threshold}")
         if warning_threshold is not None:
-            self._warning_threshold = warning_threshold
-            result["actions"].append(f"warning_threshold={warning_threshold}")
+            self._warning_threshold = self._normalize_threshold(warning_threshold, fallback=self._warning_threshold)
+            result["actions"].append(f"warning_threshold={self._warning_threshold}")
         if alarm_threshold is not None:
-            self._alarm_threshold = alarm_threshold
-            result["actions"].append(f"alarm_threshold={alarm_threshold}")
+            self._alarm_threshold = self._normalize_threshold(alarm_threshold, fallback=self._alarm_threshold)
+            result["actions"].append(f"alarm_threshold={self._alarm_threshold}")
 
         if model_path:
             load_result = self.load_model(model_path)
@@ -131,8 +149,15 @@ class NewFaceVisionEngine:
             self._begin_operation("load_model", "Load model")
             _log.info(f"Loading model from {path}")
 
-            if torch is None or nn is None or torchvision is None or TF is None:
-                return self._fail_operation("torch/torchvision are not installed", code="dependency_missing")
+            deps_ok, deps_details = self._ensure_model_dependencies()
+            if not deps_ok:
+                return self._fail_operation(
+                    {
+                        "message": "torch/torchvision are not installed",
+                        "details": deps_details,
+                    },
+                    code="dependency_missing",
+                )
 
             if not os.path.exists(path):
                 return self._fail_operation(f"Model file not found: {path}", code="file_not_found")
@@ -160,6 +185,9 @@ class NewFaceVisionEngine:
             size_mb = os.path.getsize(path) / 1024 / 1024
             _log.info(f"Model loaded: {size_mb:.1f} MB on {self._device}")
 
+            cleanup = self._cleanup_previous_uploads(Path(path))
+            if cleanup:
+                self._files["model"]["cleanup"] = cleanup
             self._end_operation()
             return {"ok": True, "model_loaded": True, "device": self._device, "size_mb": round(size_mb, 1)}
 
@@ -172,30 +200,46 @@ class NewFaceVisionEngine:
             self._begin_operation("load_frames", "Load frames")
             _log.info(f"Loading frames from {path}")
 
-            if Image is None or np is None:
-                return self._fail_operation("Pillow/numpy are not installed", code="dependency_missing")
+            deps_ok, deps_details = self._ensure_image_dependencies()
+            if not deps_ok:
+                return self._fail_operation(
+                    {
+                        "message": "Pillow/numpy are not installed",
+                        "details": deps_details,
+                    },
+                    code="dependency_missing",
+                )
 
             if not os.path.exists(path):
                 return self._fail_operation(f"Frames path not found: {path}", code="file_not_found")
 
-            if os.path.isfile(path) and path.endswith('.zip'):
+            source_path = Path(path)
+            if source_path.is_file() and source_path.suffix.lower() == '.zip':
                 if self.frames_dir.exists():
                     shutil.rmtree(self.frames_dir)
                 self.frames_dir.mkdir(exist_ok=True)
 
-                with zipfile.ZipFile(path, 'r') as zip_ref:
-                    zip_ref.extractall(self.frames_dir)
+                self._extract_zip_safely(source_path, self.frames_dir)
+                images_dir = self.frames_dir
+            elif source_path.is_dir():
+                images_dir = source_path
+            else:
+                images_dir = self.frames_dir
 
-            self._frames = self._load_images_from_folder(str(self.frames_dir))
+            self._frames = self._load_images_from_folder(str(images_dir))
             self._current_frame_idx = 0
             self._prediction_cache = {}
             self._latest = None
+            self._begin_run(mode="idle")
 
             if len(self._frames) == 0:
                 return self._fail_operation("No images found", code="empty_dataset")
 
             _log.info(f"Loaded {len(self._frames)} frames")
             self._files["frames"] = self._file_ref(path, source_ref=source_ref)
+            cleanup = self._cleanup_previous_uploads(Path(path))
+            if cleanup:
+                self._files["frames"]["cleanup"] = cleanup
             self._end_operation()
             return {"ok": True, "total_frames": len(self._frames)}
 
@@ -208,24 +252,39 @@ class NewFaceVisionEngine:
             self._begin_operation("load_masks", "Load masks")
             _log.info(f"Loading masks from {path}")
 
-            if Image is None or np is None:
-                return self._fail_operation("Pillow/numpy are not installed", code="dependency_missing")
+            deps_ok, deps_details = self._ensure_image_dependencies()
+            if not deps_ok:
+                return self._fail_operation(
+                    {
+                        "message": "Pillow/numpy are not installed",
+                        "details": deps_details,
+                    },
+                    code="dependency_missing",
+                )
 
             if not os.path.exists(path):
                 return self._fail_operation(f"Masks path not found: {path}", code="file_not_found")
 
-            if os.path.isfile(path) and path.endswith('.zip'):
+            source_path = Path(path)
+            if source_path.is_file() and source_path.suffix.lower() == '.zip':
                 if self.masks_dir.exists():
                     shutil.rmtree(self.masks_dir)
                 self.masks_dir.mkdir(exist_ok=True)
 
-                with zipfile.ZipFile(path, 'r') as zip_ref:
-                    zip_ref.extractall(self.masks_dir)
+                self._extract_zip_safely(source_path, self.masks_dir)
+                masks_dir = self.masks_dir
+            elif source_path.is_dir():
+                masks_dir = source_path
+            else:
+                masks_dir = self.masks_dir
 
-            self._masks = self._load_images_from_folder(str(self.masks_dir))
+            self._masks = self._load_images_from_folder(str(masks_dir))
 
             _log.info(f"Loaded {len(self._masks)} masks")
             self._files["masks"] = self._file_ref(path, source_ref=source_ref)
+            cleanup = self._cleanup_previous_uploads(Path(path))
+            if cleanup:
+                self._files["masks"]["cleanup"] = cleanup
             self._end_operation()
             return {"ok": True, "loaded_masks": len(self._masks)}
 
@@ -255,6 +314,9 @@ class NewFaceVisionEngine:
 
             _log.info(f"Loaded {len(self._metadata)} metadata entries")
             self._files["metadata"] = self._file_ref(path, source_ref=source_ref)
+            cleanup = self._cleanup_previous_uploads(Path(path))
+            if cleanup:
+                self._files["metadata"]["cleanup"] = cleanup
             self._end_operation()
             return {"ok": True, "loaded_metadata": len(self._metadata)}
 
@@ -265,8 +327,15 @@ class NewFaceVisionEngine:
     def process_frame(self, frame_idx: int | None = None) -> dict[str, Any]:
         try:
             self._begin_operation("process_frame", "Process frame")
-            if Image is None or np is None:
-                return self._fail_operation("Pillow/numpy are not installed", code="dependency_missing")
+            deps_ok, deps_details = self._ensure_image_dependencies()
+            if not deps_ok:
+                return self._fail_operation(
+                    {
+                        "message": "Pillow/numpy are not installed",
+                        "details": deps_details,
+                    },
+                    code="dependency_missing",
+                )
 
             if not self._frames:
                 return self._fail_operation("No frames loaded", code="frames_missing")
@@ -283,8 +352,7 @@ class NewFaceVisionEngine:
 
             cache_key = str(frame_idx)
             if cache_key in self._prediction_cache:
-                result = self._prediction_cache[cache_key]
-                self._record_frame_result(result, total_frames=len(frame_keys))
+                result = self._record_frame_result(dict(self._prediction_cache[cache_key]), total_frames=len(frame_keys))
                 self._end_operation()
                 return result
 
@@ -341,8 +409,8 @@ class NewFaceVisionEngine:
 
             if len(self._prediction_cache) > 100:
                 self._prediction_cache.pop(next(iter(self._prediction_cache)))
-            self._prediction_cache[cache_key] = result
-            self._record_frame_result(result, total_frames=len(frame_keys))
+            self._prediction_cache[cache_key] = dict(result)
+            result = self._record_frame_result(result, total_frames=len(frame_keys))
             self._end_operation()
 
             return result
@@ -356,8 +424,37 @@ class NewFaceVisionEngine:
         self._current_frame_idx = 0
         self._prediction_cache = {}
         self._latest = None
+        self._begin_run(mode="idle")
         self._end_operation()
         return {"ok": True, "message": "Reset completed"}
+
+    def set_playback(self, mode: str, *, fps: float | None = None) -> dict[str, Any]:
+        normalized = str(mode or "idle").strip().lower()
+        if normalized not in {"idle", "playing", "paused", "stopped"}:
+            normalized = "idle"
+        if fps is not None:
+            self._target_fps = self._normalize_fps(fps)
+        self._playback = {
+            **self._playback,
+            "mode": normalized,
+            "fps": self._target_fps,
+            "run_id": self._run_id,
+            "updated_at": time.time(),
+        }
+        return {"ok": True, "playback": dict(self._playback)}
+
+    def replay(self, *, fps: float | None = None) -> dict[str, Any]:
+        self._current_frame_idx = 0
+        self._prediction_cache = {}
+        self._latest = None
+        self._begin_run(mode="playing", fps=fps)
+        return {"ok": True, "message": "Replay started", "playback": dict(self._playback)}
+
+    def stop(self) -> dict[str, Any]:
+        self._current_frame_idx = 0
+        self._latest = None
+        self.set_playback("stopped")
+        return {"ok": True, "message": "Playback stopped", "playback": dict(self._playback)}
 
     def clear(self) -> dict[str, Any]:
         self._model = None
@@ -368,6 +465,7 @@ class NewFaceVisionEngine:
         self._current_frame_idx = 0
         self._prediction_cache = {}
         self._latest = None
+        self._begin_run(mode="idle", bump=False)
         self._files = {
             "model": None,
             "frames": None,
@@ -397,6 +495,7 @@ class NewFaceVisionEngine:
             "status": status,
             "operation": dict(self._operation),
             "files": dict(self._files),
+            "file_items": self._file_items(),
             "model": {
                 "loaded": self._model is not None,
                 "path": self._model_path,
@@ -409,7 +508,17 @@ class NewFaceVisionEngine:
                 "model_loaded": self._model is not None,
                 "current_frame": self._latest.get("frame_idx") if self._latest else None,
                 "next_frame": self._current_frame_idx,
+                "processed_frames": self._processed_frames,
+                "avg_dice": self._round_optional(
+                    self._dice_sum / self._processed_frames if self._processed_frames else None
+                ),
+                "avg_iou": self._round_optional(
+                    self._iou_sum / self._processed_frames if self._processed_frames else None
+                ),
+                "fps": self._target_fps,
+                "run_id": self._run_id,
             },
+            "playback": dict(self._playback),
             "thresholds": {
                 "warning": self._warning_threshold,
                 "alarm": self._alarm_threshold,
@@ -422,11 +531,17 @@ class NewFaceVisionEngine:
 
     def frame_stream_payload(self, result: Mapping[str, Any]) -> dict[str, Any]:
         preview = str(result.get("preview_base64") or "")
+        frame_idx = result.get("frame_idx")
+        total_frames = result.get("total_frames") or len(self._frames)
         return {
             "ok": bool(result.get("ok", True)),
-            "frame_idx": result.get("frame_idx"),
+            "id": result.get("id"),
+            "seq": result.get("seq"),
+            "run_id": result.get("run_id"),
+            "frame_idx": frame_idx,
             "frame_key": result.get("frame_key"),
-            "total_frames": result.get("total_frames") or len(self._frames),
+            "frame_label": self._frame_label(frame_idx, total_frames),
+            "total_frames": total_frames,
             "image": {
                 "mime": "image/jpeg",
                 "encoding": "base64",
@@ -445,10 +560,45 @@ class NewFaceVisionEngine:
             "ts": time.time(),
         }
 
+    def empty_frame_stream_payload(self, *, label: str = "No frame") -> dict[str, Any]:
+        return {
+            "ok": True,
+            "id": f"{self._run_id}:empty:{self._seq}",
+            "seq": self._seq,
+            "run_id": self._run_id,
+            "frame_idx": None,
+            "frame_key": None,
+            "frame_label": "",
+            "total_frames": len(self._frames),
+            "image": {
+                "mime": "image/jpeg",
+                "encoding": "base64",
+                "data": "",
+                "src": "",
+            },
+            "prediction": {
+                "pred_ratio": None,
+                "true_ratio": None,
+            },
+            "status": {
+                "label": label,
+                "color": "medium",
+            },
+            "metrics": {"dice": 0, "iou": 0},
+            "ts": time.time(),
+        }
+
     def metrics_stream_payload(self, result: Mapping[str, Any]) -> dict[str, Any]:
         metrics = result.get("metrics") if isinstance(result.get("metrics"), Mapping) else {}
+        frame_idx = result.get("frame_idx")
+        total_frames = result.get("total_frames") or len(self._frames)
         return {
-            "frame_idx": result.get("frame_idx"),
+            "id": result.get("id"),
+            "seq": result.get("seq"),
+            "run_id": result.get("run_id"),
+            "frame_idx": frame_idx,
+            "frame_label": self._frame_label(frame_idx, total_frames),
+            "total_frames": total_frames,
             "ts": time.time(),
             "series": {
                 "pred_ratio": result.get("pred_ratio"),
@@ -458,11 +608,16 @@ class NewFaceVisionEngine:
             },
         }
 
-    def _record_frame_result(self, result: Mapping[str, Any], *, total_frames: int) -> None:
+    def _record_frame_result(self, result: Mapping[str, Any], *, total_frames: int) -> dict[str, Any]:
         if not result.get("ok"):
-            return
+            return dict(result)
         frame_idx = int(result.get("frame_idx") or 0)
         metrics = result.get("metrics") if isinstance(result.get("metrics"), Mapping) else {}
+        recorded = dict(result)
+        self._seq += 1
+        recorded["seq"] = self._seq
+        recorded["run_id"] = self._run_id
+        recorded["id"] = f"{self._run_id}:{self._seq}"
         pred_ratio = result.get("pred_ratio")
         true_ratio = result.get("true_ratio")
         description_parts = []
@@ -474,29 +629,45 @@ class NewFaceVisionEngine:
             description_parts.append(f"dice={metrics.get('dice', 0)}")
             description_parts.append(f"iou={metrics.get('iou', 0)}")
         self._latest = {
-            "value": result.get("status") or "ok",
+            "value": recorded.get("status") or "ok",
             "label": f"frame {frame_idx + 1}/{total_frames}" if total_frames else f"frame {frame_idx}",
             "description": " ".join(description_parts),
+            "id": recorded["id"],
+            "seq": self._seq,
+            "run_id": self._run_id,
             "frame_idx": frame_idx,
-            "frame_key": result.get("frame_key"),
+            "frame_key": recorded.get("frame_key"),
             "total_frames": total_frames,
             "pred_ratio": pred_ratio,
             "true_ratio": true_ratio,
             "metrics": dict(metrics),
             "status": {
-                "label": result.get("status"),
-                "color": result.get("status_color"),
+                "label": recorded.get("status"),
+                "color": recorded.get("status_color"),
             },
             "ts": time.time(),
         }
+        self._processed_frames += 1
+        self._dice_sum += self._numeric(metrics.get("dice"))
+        self._iou_sum += self._numeric(metrics.get("iou"))
         self.last_error = None
         self._current_frame_idx = (frame_idx + 1) % total_frames if total_frames > 0 else 0
+        self._playback = {
+            **self._playback,
+            "run_id": self._run_id,
+            "last_frame_idx": frame_idx,
+            "updated_at": self._latest["ts"],
+        }
+        return recorded
 
     def _empty_latest(self) -> dict[str, Any]:
         return {
             "value": "--",
             "label": "",
             "description": "",
+            "id": None,
+            "seq": self._seq,
+            "run_id": self._run_id,
             "frame_idx": None,
             "frame_key": None,
             "total_frames": len(self._frames),
@@ -505,6 +676,22 @@ class NewFaceVisionEngine:
             "metrics": {"dice": 0, "iou": 0},
             "status": {"label": "", "color": ""},
             "ts": None,
+        }
+
+    def _begin_run(self, *, mode: str, fps: float | None = None, bump: bool = True) -> None:
+        if bump:
+            self._run_id += 1
+        if fps is not None:
+            self._target_fps = self._normalize_fps(fps)
+        self._seq = 0
+        self._processed_frames = 0
+        self._dice_sum = 0.0
+        self._iou_sum = 0.0
+        self._playback = {
+            "mode": mode,
+            "fps": self._target_fps,
+            "run_id": self._run_id,
+            "updated_at": time.time(),
         }
 
     def _begin_operation(self, operation_id: str, label: str) -> None:
@@ -563,17 +750,243 @@ class NewFaceVisionEngine:
             "ts": time.time(),
         }
 
+    def _normalize_threshold(self, value: Any, *, fallback: float) -> float:
+        try:
+            parsed = float(value)
+        except Exception:
+            return fallback
+        if not 0 <= parsed <= 1:
+            return fallback
+        return round(parsed, 4)
+
+    def _normalize_fps(self, value: Any) -> float:
+        try:
+            parsed = float(value)
+        except Exception:
+            parsed = self._target_fps
+        if parsed < 0.5:
+            parsed = 0.5
+        if parsed > 30:
+            parsed = 30
+        return round(parsed, 2)
+
+    def _numeric(self, value: Any) -> float:
+        try:
+            parsed = float(value)
+        except Exception:
+            return 0.0
+        return parsed if parsed == parsed else 0.0
+
+    def _round_optional(self, value: Any) -> float | None:
+        try:
+            parsed = float(value)
+        except Exception:
+            return None
+        if parsed != parsed:
+            return None
+        return round(parsed, 4)
+
+    def _ensure_image_dependencies(self) -> tuple[bool, dict[str, str]]:
+        global Image, np, _numpy_import_error, _pillow_import_error
+
+        details: dict[str, str] = {}
+        if np is None:
+            try:
+                import numpy as imported_np
+
+                np = imported_np
+                _numpy_import_error = None
+            except Exception as exc:
+                _numpy_import_error = exc
+        if Image is None:
+            try:
+                from PIL import Image as imported_image
+
+                Image = imported_image
+                _pillow_import_error = None
+            except Exception as exc:
+                _pillow_import_error = exc
+
+        if np is None and _numpy_import_error is not None:
+            details["numpy"] = repr(_numpy_import_error)
+        if Image is None and _pillow_import_error is not None:
+            details["pillow"] = repr(_pillow_import_error)
+        return Image is not None and np is not None, details
+
+    def _ensure_model_dependencies(self) -> tuple[bool, dict[str, str]]:
+        global TF, nn, torch, torchvision, _torch_import_error
+
+        if torch is None or nn is None or torchvision is None or TF is None:
+            try:
+                import torch as imported_torch
+                import torch.nn as imported_nn
+                import torchvision as imported_torchvision
+                from torchvision.transforms import functional as imported_tf
+
+                torch = imported_torch
+                nn = imported_nn
+                torchvision = imported_torchvision
+                TF = imported_tf
+                _torch_import_error = None
+            except Exception as exc:
+                _torch_import_error = exc
+
+        if torch is not None:
+            self._device = "cuda" if torch.cuda.is_available() else "cpu"
+        details: dict[str, str] = {}
+        if (torch is None or nn is None or torchvision is None or TF is None) and _torch_import_error is not None:
+            details["torch"] = repr(_torch_import_error)
+        return torch is not None and nn is not None and torchvision is not None and TF is not None, details
+
+    def _frame_label(self, frame_idx: Any, total_frames: Any) -> str:
+        if frame_idx is None:
+            return ""
+        try:
+            idx = int(frame_idx)
+            total = int(total_frames or 0)
+        except Exception:
+            return str(frame_idx)
+        return f"{idx + 1}/{total}" if total else str(idx)
+
     def _file_ref(self, path: str, *, source_ref: Mapping[str, Any] | None = None) -> dict[str, Any]:
         file_path = Path(path)
+        stat = None
+        if file_path.exists() and file_path.is_file():
+            stat = file_path.stat()
         out = {
             "path": str(file_path),
             "name": file_path.name,
             "exists": file_path.exists(),
-            "size_bytes": file_path.stat().st_size if file_path.exists() and file_path.is_file() else None,
+            "size_bytes": stat.st_size if stat is not None else None,
+            "modified_at": stat.st_mtime if stat is not None else None,
+            "updated_at": stat.st_mtime if stat is not None else None,
         }
         if source_ref:
             out["source"] = dict(source_ref)
         return out
+
+    def _file_items(self) -> list[dict[str, Any]]:
+        labels = {
+            "model": "Model",
+            "frames": "Frames",
+            "masks": "Masks",
+            "metadata": "Metadata",
+        }
+        icons = {
+            "model": "cube-outline",
+            "frames": "images-outline",
+            "masks": "layers-outline",
+            "metadata": "document-text-outline",
+        }
+        counters = {
+            "model": "loaded" if self._model is not None else "",
+            "frames": f"{len(self._frames)} frames" if self._frames else "",
+            "masks": f"{len(self._masks)} masks" if self._masks else "",
+            "metadata": f"{len(self._metadata)} rows" if self._metadata else "",
+        }
+        items: list[dict[str, Any]] = []
+        for kind in ("model", "frames", "masks", "metadata"):
+            ref = self._files.get(kind)
+            if not ref:
+                continue
+            name = str(ref.get("name") or Path(str(ref.get("path") or "")).name or kind)
+            size_label = self._format_bytes(ref.get("size_bytes"))
+            counter = counters.get(kind) or ""
+            title_suffix = f" ({counter})" if counter else ""
+            details = {
+                "kind": kind,
+                "path": ref.get("path"),
+                "size": size_label,
+                "size_bytes": ref.get("size_bytes"),
+                "modified_at": ref.get("modified_at"),
+                "exists": ref.get("exists"),
+            }
+            cleanup = ref.get("cleanup") if isinstance(ref, Mapping) else None
+            if cleanup:
+                details["cleanup"] = cleanup
+            items.append(
+                {
+                    "id": kind,
+                    "kind": kind,
+                    "icon": icons.get(kind),
+                    "label": f"{labels[kind]}: {name}{title_suffix}",
+                    "name": name,
+                    "updated_at": ref.get("updated_at"),
+                    "modified_at": ref.get("modified_at"),
+                    "size_bytes": ref.get("size_bytes"),
+                    "size_label": size_label,
+                    "details": details,
+                }
+            )
+        return items
+
+    def _format_bytes(self, value: Any) -> str:
+        try:
+            size = int(value)
+        except Exception:
+            return ""
+        if size >= 1024 * 1024 * 1024:
+            return f"{size / (1024 * 1024 * 1024):.1f} GB"
+        if size >= 1024 * 1024:
+            return f"{size / (1024 * 1024):.1f} MB"
+        if size >= 1024:
+            return f"{size / 1024:.1f} KB"
+        return f"{size} B"
+
+    def _cleanup_previous_uploads(self, current_path: Path) -> dict[str, Any] | None:
+        try:
+            current = current_path.resolve()
+        except Exception:
+            return None
+        if not current.exists() or not current.is_file():
+            return None
+
+        purpose_dir = self._upload_purpose_dir(current)
+        if purpose_dir is None:
+            return None
+
+        deleted_names: list[str] = []
+        deleted_bytes = 0
+        for candidate in sorted(purpose_dir.rglob("*")):
+            if not candidate.is_file():
+                continue
+            try:
+                resolved = candidate.resolve()
+            except Exception:
+                continue
+            if resolved == current or candidate.name.startswith("."):
+                continue
+            try:
+                stat = candidate.stat()
+                candidate.unlink()
+                deleted_names.append(candidate.name)
+                deleted_bytes += int(stat.st_size)
+            except Exception as exc:
+                _log.warning("failed to remove stale upload %s: %s", candidate, exc)
+
+        for directory in sorted(
+            [item for item in purpose_dir.rglob("*") if item.is_dir()],
+            key=lambda item: len(item.parts),
+            reverse=True,
+        ):
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+
+        if not deleted_names:
+            return None
+        return {
+            "deleted_count": len(deleted_names),
+            "deleted_names": deleted_names[:20],
+            "deleted_bytes": deleted_bytes,
+        }
+
+    def _upload_purpose_dir(self, current: Path) -> Path | None:
+        for parent in current.parents:
+            if parent.name and parent.parent.name == "uploads":
+                return parent
+        return None
 
     def _load_images_from_folder(self, folder_path: str) -> dict[str, Path]:
         images: dict[str, Path] = {}
@@ -592,6 +1005,22 @@ class NewFaceVisionEngine:
                 images[img_path.stem] = img_path
 
         return images
+
+    def _extract_zip_safely(self, zip_path: Path, dest_dir: Path) -> None:
+        dest_root = dest_dir.resolve()
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            for member in zip_ref.infolist():
+                if member.is_dir():
+                    continue
+                member_name = str(member.filename or "").replace("\\", "/")
+                if not member_name or member_name.startswith("/") or ".." in Path(member_name).parts:
+                    raise ValueError(f"Unsafe archive member: {member.filename}")
+                target = (dest_root / member_name).resolve()
+                if dest_root not in target.parents and target != dest_root:
+                    raise ValueError(f"Unsafe archive member: {member.filename}")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with zip_ref.open(member) as source, open(target, "wb") as sink:
+                    shutil.copyfileobj(source, sink)
 
     def _load_image_ref(self, img_path: Path) -> Image.Image:
         with Image.open(img_path) as img:

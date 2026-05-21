@@ -1,5 +1,5 @@
 name: new_face_vision_skill
-version: 0.2.1
+version: 0.2.3
 description: Анализ дефектов камней на видео с помощью нейросети (сегментация DeepLabV3)
 entry: handlers/main.py
 runtime:
@@ -7,6 +7,8 @@ runtime:
 dependencies:
 - pillow>=10.0.0
 - numpy>=1.24.0
+- torch>=2.2.0
+- torchvision>=0.17.0
 tools:
 - name: new_face_vision_status
   description: Получить текущий статус скилла и статистику
@@ -121,6 +123,42 @@ tools:
     properties:
       webspace_id:
         type: string
+- name: new_face_vision_play
+  description: Start stream-backed playback for the loaded frame set.
+  entry: handlers.main:new_face_vision_play
+  input_schema:
+    type: object
+    properties:
+      fps:
+        type: number
+      webspace_id:
+        type: string
+- name: new_face_vision_pause
+  description: Pause stream-backed playback without clearing the current frame.
+  entry: handlers.main:new_face_vision_pause
+  input_schema:
+    type: object
+    properties:
+      webspace_id:
+        type: string
+- name: new_face_vision_stop
+  description: Stop playback and reset the frame cursor.
+  entry: handlers.main:new_face_vision_stop
+  input_schema:
+    type: object
+    properties:
+      webspace_id:
+        type: string
+- name: new_face_vision_replay
+  description: Reset the run and start playback from the first frame.
+  entry: handlers.main:new_face_vision_replay
+  input_schema:
+    type: object
+    properties:
+      fps:
+        type: number
+      webspace_id:
+        type: string
 - name: new_face_vision_reset
   description: Сбросить текущий кадр на первый
   entry: handlers.main:new_face_vision_reset
@@ -153,12 +191,106 @@ events:
   subscribe:
   - new_face_vision.action
   - new_face_vision.status.refresh
+  - webio.stream.snapshot.requested
+  - webio.stream.subscription.changed
   - sys.ready
   publish:
   - new_face_vision.ready
   - new_face_vision.frame
   - new_face_vision.error
   - io.out.stream.publish
+data_routes:
+- surface: scenario:new_face_vision.status
+  route: yjs
+  owner: skill:new_face_vision_skill
+  projection_slot: new_face_vision.current
+  path: data/new_face_vision/current
+  first_paint: compact status, file refs, counters, thresholds, playback mode, and
+    latest summary
+  recovery: Yjs replay restores the latest compact control state; status refresh can
+    rebuild it.
+  update_source:
+  - new_face_vision_status
+  - new_face_vision_configure
+  - new_face_vision_load_*
+  - new_face_vision_* playback tools
+  budget:
+    max_payload_bytes: 12288
+    max_publish_hz: 2
+    coalesce_ms: 250
+    snapshot_policy: none
+  guard_visibility:
+    degraded_state: UI keeps the last compact state; frame preview and chart details
+      remain stream-only.
+    log: service.new_face_vision_skill.runtime.log
+    quarantine: true
+    metric: yjs_owner_guard.new_face_vision.current
+- surface: scenario:new_face_vision.frame_preview
+  route: stream
+  owner: skill:new_face_vision_skill
+  receiver: newface_vision_frame
+  first_paint: empty frame viewer until a frame is processed or a stream snapshot
+    is replayed
+  recovery: Stream snapshot request republishes the last in-memory preview when available.
+  update_source:
+  - new_face_vision_process_frame
+  - new_face_vision_play
+  - webio.stream.snapshot.requested
+  budget:
+    max_payload_bytes: 1048576
+    max_publish_hz: 30
+    coalesce_ms: 33
+    max_items: 1
+    snapshot_policy: on_subscribe
+  guard_visibility:
+    degraded_state: Preview can go stale independently while Yjs status and controls
+      remain usable.
+    log: service.new_face_vision_skill.runtime.log
+    quarantine: false
+    metric: webio_stream_guard.new_face_vision.frame
+- surface: scenario:new_face_vision.metrics
+  route: stream
+  owner: skill:new_face_vision_skill
+  receiver: newface_vision_metrics
+  first_paint: empty bounded chart history
+  recovery: Stream snapshot request replays the last 120 in-memory metric points.
+  update_source:
+  - new_face_vision_process_frame
+  - new_face_vision_play
+  - webio.stream.snapshot.requested
+  budget:
+    max_payload_bytes: 8192
+    max_publish_hz: 30
+    coalesce_ms: 33
+    max_items: 120
+    snapshot_policy: on_subscribe
+  guard_visibility:
+    degraded_state: Charts can lose older samples without touching compact Yjs state.
+    log: service.new_face_vision_skill.runtime.log
+    quarantine: false
+    metric: webio_stream_guard.new_face_vision.metrics
+- surface: scenario:new_face_vision.progress
+  route: stream
+  owner: skill:new_face_vision_skill
+  receiver: newface_vision_progress
+  first_paint: empty progress state
+  recovery: Stream snapshot request republishes the last compact operation/error payload.
+  update_source:
+  - new_face_vision_load_*
+  - new_face_vision_process_frame
+  - webio.stream.snapshot.requested
+  budget:
+    max_payload_bytes: 4096
+    max_publish_hz: 4
+    coalesce_ms: 250
+    max_items: 1
+    snapshot_policy: on_subscribe
+  guard_visibility:
+    degraded_state: Last progress message can be stale; errors are also mirrored in
+      compact Yjs.
+    log: service.new_face_vision_skill.runtime.log
+    quarantine: false
+    metric: webio_stream_guard.new_face_vision.progress
 data_projections:
 - scope: subnet
   slot: new_face_vision.current
@@ -170,5 +302,5 @@ data_projections:
   targets:
   - backend: yjs
     path: data/new_face_vision/history
-updated_at: '2026-05-16T14:31:59+00:00'
+updated_at: '2026-05-21T06:44:13+00:00'
 

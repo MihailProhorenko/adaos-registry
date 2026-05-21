@@ -1,5 +1,129 @@
 {
-  "$schema": "../../../src/adaos/abi/webui.v1.schema.json",
+  "$schema": "../../../../src/adaos/abi/webui.v1.schema.json",
+  "webio": {
+    "receivers": {
+      "newface_vision_frame": {
+        "mode": "replace",
+        "transport": "hub",
+        "snapshotPolicy": "on_subscribe",
+        "sequenceField": "seq",
+        "updatedAtField": "ts",
+        "budget": {
+          "maxPayloadBytes": 1048576,
+          "maxPublishHz": 30,
+          "coalesceMs": 33,
+          "maxItems": 1
+        },
+        "guardVisibility": {
+          "degradedState": "Keep the last preview while compact Yjs status remains interactive.",
+          "log": "service.new_face_vision_skill.runtime.log",
+          "quarantine": false,
+          "metric": "webio_stream_guard.new_face_vision.frame"
+        },
+        "route": {
+          "kind": "stream",
+          "surface": "scenario:new_face_vision.frame_preview",
+          "owner": "skill:new_face_vision_skill",
+          "firstPaint": "Empty frame viewer until first frame stream event.",
+          "recovery": "Snapshot request republishes the last in-memory frame payload."
+        },
+        "initialState": {
+          "ok": true,
+          "frame_idx": null,
+          "frame_label": "",
+          "total_frames": 0,
+          "image": {
+            "mime": "image/jpeg",
+            "encoding": "base64",
+            "data": "",
+            "src": ""
+          },
+          "prediction": {
+            "pred_ratio": null,
+            "true_ratio": null
+          },
+          "status": {
+            "label": "No frame",
+            "color": "medium"
+          },
+          "metrics": {
+            "dice": 0,
+            "iou": 0
+          }
+        }
+      },
+      "newface_vision_metrics": {
+        "mode": "append",
+        "transport": "hub",
+        "collectionKey": "points",
+        "dedupeBy": "id",
+        "maxItems": 120,
+        "snapshotPolicy": "on_subscribe",
+        "sequenceField": "seq",
+        "updatedAtField": "ts",
+        "budget": {
+          "maxPayloadBytes": 8192,
+          "maxPublishHz": 30,
+          "coalesceMs": 33,
+          "maxItems": 120
+        },
+        "guardVisibility": {
+          "degradedState": "Drop older chart samples before touching compact Yjs state.",
+          "log": "service.new_face_vision_skill.runtime.log",
+          "quarantine": false,
+          "metric": "webio_stream_guard.new_face_vision.metrics"
+        },
+        "route": {
+          "kind": "stream",
+          "surface": "scenario:new_face_vision.metrics",
+          "owner": "skill:new_face_vision_skill",
+          "firstPaint": "Empty bounded chart history.",
+          "recovery": "Snapshot request replays the last bounded in-memory points."
+        },
+        "initialState": {
+          "metric_id": "new_face_vision_metrics",
+          "title": "Live metrics",
+          "points": []
+        }
+      },
+      "newface_vision_progress": {
+        "mode": "replace",
+        "transport": "hub",
+        "snapshotPolicy": "on_subscribe",
+        "updatedAtField": "ts",
+        "budget": {
+          "maxPayloadBytes": 4096,
+          "maxPublishHz": 4,
+          "coalesceMs": 250,
+          "maxItems": 1
+        },
+        "guardVisibility": {
+          "degradedState": "Progress can be stale; errors are also mirrored in compact Yjs.",
+          "log": "service.new_face_vision_skill.runtime.log",
+          "quarantine": false,
+          "metric": "webio_stream_guard.new_face_vision.progress"
+        },
+        "route": {
+          "kind": "stream",
+          "surface": "scenario:new_face_vision.progress",
+          "owner": "skill:new_face_vision_skill",
+          "firstPaint": "Empty operation feedback.",
+          "recovery": "Snapshot request republishes the last operation payload."
+        },
+        "initialState": {
+          "ok": true,
+          "status": "init",
+          "operation": {
+            "id": null,
+            "label": "",
+            "progress": null,
+            "error": null
+          },
+          "error": null
+        }
+      }
+    }
+  },
   "apps": [
     {
       "id": "newface_vision_app",
@@ -16,6 +140,11 @@
       "dataSource": {
         "kind": "y",
         "path": "data/new_face_vision/current/latest"
+      },
+      "inputs": {
+        "valuePath": "label",
+        "descriptionPath": "description",
+        "emptyText": "--"
       }
     }
   ],
@@ -23,41 +152,31 @@
     "modals": {
       "newface_vision_modal": {
         "title": "New Face Vision",
+        "presentation": {
+          "kind": "fullscreen"
+        },
         "schema": {
           "id": "newface_vision_modal",
+          "surfaceClass": "operations",
           "layout": {
-            "type": "single",
-            "pattern": "stack",
+            "type": "split",
+            "pattern": "split",
             "areas": [
               {
                 "id": "main",
                 "role": "main"
               },
               {
-                "id": "preview",
-                "role": "detail"
-              },
-              {
-                "id": "controls",
-                "role": "footer"
+                "id": "right",
+                "role": "aux"
               }
             ]
           },
           "widgets": [
             {
-              "id": "newface_stats",
-              "type": "ui.jsonViewer",
-              "area": "main",
-              "title": "Compact state",
-              "dataSource": {
-                "kind": "y",
-                "path": "data/new_face_vision/current"
-              }
-            },
-            {
-              "id": "newface_preview",
+              "id": "newface_modal_frame",
               "type": "visual.frameViewer",
-              "area": "preview",
+              "area": "main",
               "title": "Preview",
               "dataSource": {
                 "kind": "stream",
@@ -65,8 +184,8 @@
               },
               "inputs": {
                 "imageField": "image.src",
-                "aspectRatio": "16 / 9",
-                "emptyText": "No frame yet",
+                "aspectRatio": "4 / 1",
+                "emptyText": "Load frames, then press Play or Step.",
                 "metrics": [
                   { "label": "Pred", "path": "prediction.pred_ratio" },
                   { "label": "True", "path": "prediction.true_ratio" },
@@ -76,18 +195,197 @@
               }
             },
             {
-              "id": "newface_metrics",
-              "type": "visual.timeseriesChart",
+              "id": "newface_modal_controls",
+              "type": "input.commandBar",
               "area": "main",
-              "title": "Dice trend",
+              "title": "Controls",
+              "inputs": {
+                "size": "small",
+                "buttons": [
+                  { "id": "upload", "label": "Upload" },
+                  { "id": "play", "label": "Play" },
+                  { "id": "step", "label": "Step" },
+                  { "id": "pause", "label": "Pause" },
+                  { "id": "stop", "label": "Stop" },
+                  { "id": "replay", "label": "Replay" },
+                  { "id": "clear", "label": "Clear", "kind": "danger" }
+                ]
+              },
+              "actions": [
+                {
+                  "on": "click:upload",
+                  "type": "openModal",
+                  "params": {
+                    "modalId": "newface_upload_modal"
+                  }
+                },
+                {
+                  "on": "click:play",
+                  "type": "callSkill",
+                  "target": "new_face_vision_skill.new_face_vision_play",
+                  "params": {
+                    "fps": 5
+                  }
+                },
+                {
+                  "on": "click:step",
+                  "type": "callSkill",
+                  "target": "new_face_vision_skill.new_face_vision_play_step"
+                },
+                {
+                  "on": "click:pause",
+                  "type": "callSkill",
+                  "target": "new_face_vision_skill.new_face_vision_pause"
+                },
+                {
+                  "on": "click:stop",
+                  "type": "callSkill",
+                  "target": "new_face_vision_skill.new_face_vision_stop"
+                },
+                {
+                  "on": "click:replay",
+                  "type": "callSkill",
+                  "target": "new_face_vision_skill.new_face_vision_replay",
+                  "params": {
+                    "fps": 5
+                  }
+                },
+                {
+                  "on": "click:clear",
+                  "type": "callSkill",
+                  "target": "new_face_vision_skill.new_face_vision_clear"
+                }
+              ]
+            },
+            {
+              "id": "newface_modal_bad_ratio",
+              "type": "visual.metricTile",
+              "area": "right",
+              "title": "Bad ratio",
+              "dataSource": {
+                "kind": "y",
+                "path": "data/new_face_vision/current/latest"
+              },
+              "inputs": {
+                "valuePath": "pred_ratio",
+                "format": "percent",
+                "emptyText": "--%",
+                "descriptionPath": "description"
+              }
+            },
+            {
+              "id": "newface_modal_frames",
+              "type": "visual.metricTile",
+              "area": "right",
+              "title": "Frames",
+              "dataSource": {
+                "kind": "y",
+                "path": "data/new_face_vision/current/stats"
+              },
+              "inputs": {
+                "valuePath": "total_frames",
+                "format": "integer",
+                "descriptionPath": "next_frame"
+              }
+            },
+            {
+              "id": "newface_modal_model",
+              "type": "visual.metricTile",
+              "area": "right",
+              "title": "Model",
+              "dataSource": {
+                "kind": "y",
+                "path": "data/new_face_vision/current/model"
+              },
+              "inputs": {
+                "valuePath": "loaded",
+                "format": "boolean",
+                "trueText": "Loaded",
+                "falseText": "No model"
+              }
+            },
+            {
+              "id": "newface_modal_dice",
+              "type": "visual.metricTile",
+              "area": "right",
+              "title": "Dice avg",
+              "dataSource": {
+                "kind": "y",
+                "path": "data/new_face_vision/current/stats"
+              },
+              "inputs": {
+                "valuePath": "avg_dice",
+                "emptyText": "--"
+              }
+            },
+            {
+              "id": "newface_modal_ratio_chart",
+              "type": "visual.timeseriesChart",
+              "area": "right",
+              "title": "Bad ratio",
               "dataSource": {
                 "kind": "stream",
                 "receiver": "newface_vision_metrics"
               },
               "inputs": {
-                "xKey": "frame_idx",
+                "xKey": "seq",
+                "yKey": "series.pred_ratio",
+                "emptyText": "No metric points"
+              }
+            },
+            {
+              "id": "newface_modal_metrics_chart",
+              "type": "visual.timeseriesChart",
+              "area": "right",
+              "title": "Dice",
+              "dataSource": {
+                "kind": "stream",
+                "receiver": "newface_vision_metrics"
+              },
+              "inputs": {
+                "xKey": "seq",
                 "yKey": "series.dice",
                 "emptyText": "No metric points"
+              }
+            }
+          ]
+        }
+      },
+      "newface_upload_modal": {
+        "title": "Upload assets",
+        "presentation": {
+          "kind": "modal"
+        },
+        "schema": {
+          "id": "newface_upload_modal",
+          "layout": {
+            "type": "single",
+            "pattern": "stack",
+            "areas": [
+              {
+                "id": "main",
+                "role": "main"
+              }
+            ]
+          },
+          "widgets": [
+            {
+              "id": "newface_loaded_files",
+              "type": "ui.list",
+              "area": "main",
+              "title": "Loaded files",
+              "dataSource": {
+                "kind": "y",
+                "path": "data/new_face_vision/current/file_items"
+              },
+              "inputs": {
+                "titleKey": "label",
+                "subtitleKey": "updated_at",
+                "iconKey": "icon",
+                "emptyText": "No files loaded",
+                "itemAccordion": true,
+                "detailsPath": "details",
+                "inset": true
               }
             },
             {
@@ -181,39 +479,6 @@
                   }
                 }
               ]
-            },
-            {
-              "id": "newface_status",
-              "type": "visual.metricTile",
-              "area": "main",
-              "title": "Latest result",
-              "dataSource": {
-                "kind": "y",
-                "path": "data/new_face_vision/current/latest"
-              }
-            },
-            {
-              "id": "newface_controls",
-              "type": "input.commandBar",
-              "area": "controls",
-              "title": "Controls",
-              "inputs": {
-                "buttons": [
-                  { "id": "play", "label": "Next frame", "icon": "play" },
-                  { "id": "reset", "label": "Reset", "icon": "refresh" },
-                  { "id": "clear", "label": "Clear", "icon": "trash", "kind": "danger" }
-                ]
-              },
-              "actions": [
-                {
-                  "on": "click",
-                  "type": "callSkill",
-                  "target": "new_face_vision_skill.new_face_vision_action",
-                  "params": {
-                    "id": "$event.id"
-                  }
-                }
-              ]
             }
           ]
         }
@@ -221,29 +486,9 @@
     },
     "widgets": {}
   },
-  "webio": {
-    "receivers": {
-      "newface_vision_frame": {
-        "mode": "replace",
-        "initialState": {}
-      },
-      "newface_vision_metrics": {
-        "mode": "append",
-        "collectionKey": "points",
-        "dedupeBy": "frame_idx",
-        "maxItems": 500,
-        "initialState": {
-          "points": []
-        }
-      },
-      "newface_vision_progress": {
-        "mode": "replace",
-        "initialState": {}
-      }
-    }
-  },
   "ydoc_defaults": {
     "data/new_face_vision/current": {
+      "ok": true,
       "status": "init",
       "operation": {
         "id": null,
@@ -257,6 +502,7 @@
         "masks": null,
         "metadata": null
       },
+      "file_items": [],
       "model": {
         "loaded": false,
         "path": null,
@@ -266,9 +512,20 @@
         "total_frames": 0,
         "loaded_masks": 0,
         "loaded_metadata": 0,
+        "model_loaded": false,
         "current_frame": null,
         "next_frame": 0,
-        "model_loaded": false
+        "processed_frames": 0,
+        "avg_dice": null,
+        "avg_iou": null,
+        "fps": 5,
+        "run_id": 1
+      },
+      "playback": {
+        "mode": "idle",
+        "fps": 5,
+        "run_id": 1,
+        "updated_at": null
       },
       "thresholds": {
         "warning": 0.05,
@@ -279,6 +536,9 @@
         "value": "--",
         "label": "",
         "description": "",
+        "id": null,
+        "seq": 0,
+        "run_id": 1,
         "frame_idx": null,
         "frame_key": null,
         "total_frames": 0,
