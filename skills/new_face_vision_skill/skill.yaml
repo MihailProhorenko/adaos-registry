@@ -1,5 +1,5 @@
 name: new_face_vision_skill
-version: 0.2.5
+version: 0.2.7
 description: Анализ дефектов камней на видео с помощью нейросети (сегментация DeepLabV3)
 entry: handlers/main.py
 runtime:
@@ -118,6 +118,22 @@ tools:
 - name: new_face_vision_play_step
   description: Обработать следующий кадр (play)
   entry: handlers.main:new_face_vision_play_step
+  input_schema:
+    type: object
+    properties:
+      webspace_id:
+        type: string
+- name: new_face_vision_step_forward
+  description: Show the next frame result.
+  entry: handlers.main:new_face_vision_step_forward
+  input_schema:
+    type: object
+    properties:
+      webspace_id:
+        type: string
+- name: new_face_vision_step_back
+  description: Show the previous frame result without changing aggregate metrics.
+  entry: handlers.main:new_face_vision_step_back
   input_schema:
     type: object
     properties:
@@ -302,5 +318,5 @@ data_projections:
   targets:
   - backend: yjs
     path: data/new_face_vision/history
-updated_at: '2026-05-21T09:49:08+00:00'
+updated_at: '2026-05-21T12:41:03+00:00'
 

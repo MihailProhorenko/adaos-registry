@@ -559,6 +559,26 @@ def new_face_vision_play_step(webspace_id: str | None = None, **_: Any) -> dict[
     return new_face_vision_process_frame(frame_idx=None, webspace_id=webspace_id)
 
 
+@tool("new_face_vision_step_forward")
+def new_face_vision_step_forward(webspace_id: str | None = None, **_: Any) -> dict[str, Any]:
+    return new_face_vision_play_step(webspace_id=webspace_id)
+
+
+@tool("new_face_vision_step_back")
+def new_face_vision_step_back(webspace_id: str | None = None, **_: Any) -> dict[str, Any]:
+    try:
+        with _ENGINE_LOCK:
+            engine = _engine_instance()
+            result = engine.process_relative_frame(-1)
+        if result.get("ok"):
+            _publish_frame_result(result, webspace_id=webspace_id)
+        else:
+            _publish_event("new_face_vision.frame", _compact_frame_event(result))
+        return _result_with_snapshot(result, webspace_id=webspace_id)
+    except Exception as exc:
+        return _handle_error(exc, webspace_id=webspace_id)
+
+
 @tool("new_face_vision_play")
 def new_face_vision_play(fps: float | None = None, webspace_id: str | None = None, **_: Any) -> dict[str, Any]:
     try:
@@ -679,7 +699,11 @@ def new_face_vision_action(id: str | None = None, value: Any = None, webspace_id
         if action in {"", "refresh", "status"}:
             return new_face_vision_status(webspace_id=selected_webspace)
         if action in {"process_next", "step", "next"}:
-            return new_face_vision_play_step(webspace_id=selected_webspace)
+            return new_face_vision_step_forward(webspace_id=selected_webspace)
+        if action in {"step_forward", "forward"}:
+            return new_face_vision_step_forward(webspace_id=selected_webspace)
+        if action in {"step_back", "back"}:
+            return new_face_vision_step_back(webspace_id=selected_webspace)
         if action == "play":
             return new_face_vision_play(webspace_id=selected_webspace)
         if action == "pause":

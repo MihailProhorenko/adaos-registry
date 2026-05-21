@@ -169,6 +169,10 @@
               {
                 "id": "right",
                 "role": "aux"
+              },
+              {
+                "id": "bottom",
+                "role": "footer"
               }
             ]
           },
@@ -185,7 +189,7 @@
               "inputs": {
                 "imageField": "image.src",
                 "aspectRatio": "4 / 1",
-                "emptyText": "Load frames, then press Play or Step.",
+                "emptyText": "Load frames, then press Play or Step Forward.",
                 "metrics": [
                   { "label": "Pred", "path": "prediction.pred_ratio" },
                   { "label": "True", "path": "prediction.true_ratio" },
@@ -204,7 +208,8 @@
                 "buttons": [
                   { "id": "upload", "label": "Upload" },
                   { "id": "play", "label": "Play" },
-                  { "id": "step", "label": "Step" },
+                  { "id": "step_back", "label": "Step Back" },
+                  { "id": "step_forward", "label": "Step Forward" },
                   { "id": "pause", "label": "Pause" },
                   { "id": "stop", "label": "Stop" },
                   { "id": "replay", "label": "Replay" },
@@ -228,9 +233,14 @@
                   }
                 },
                 {
-                  "on": "click:step",
+                  "on": "click:step_back",
                   "type": "callSkill",
-                  "target": "new_face_vision_skill.new_face_vision_play_step"
+                  "target": "new_face_vision_skill.new_face_vision_step_back"
+                },
+                {
+                  "on": "click:step_forward",
+                  "type": "callSkill",
+                  "target": "new_face_vision_skill.new_face_vision_step_forward"
                 },
                 {
                   "on": "click:pause",
@@ -321,7 +331,7 @@
             {
               "id": "newface_modal_ratio_chart",
               "type": "visual.timeseriesChart",
-              "area": "main",
+              "area": "bottom",
               "title": "Bad ratio",
               "dataSource": {
                 "kind": "stream",
@@ -336,7 +346,7 @@
             {
               "id": "newface_modal_metrics_chart",
               "type": "visual.timeseriesChart",
-              "area": "main",
+              "area": "bottom",
               "title": "Dice",
               "dataSource": {
                 "kind": "stream",

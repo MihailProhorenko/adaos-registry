@@ -331,7 +331,7 @@ class NewFaceVisionEngine:
             _log.error(f"Failed to load metadata: {e}")
             return self._fail_operation(str(e), code="load_metadata_failed")
 
-    def process_frame(self, frame_idx: int | None = None) -> dict[str, Any]:
+    def process_frame(self, frame_idx: int | None = None, *, count_metrics: bool = True) -> dict[str, Any]:
         try:
             self._begin_operation("process_frame", "Process frame")
             deps_ok, deps_details = self._ensure_image_dependencies()
@@ -359,7 +359,11 @@ class NewFaceVisionEngine:
 
             cache_key = str(frame_idx)
             if cache_key in self._prediction_cache:
-                result = self._record_frame_result(dict(self._prediction_cache[cache_key]), total_frames=len(frame_keys))
+                result = self._record_frame_result(
+                    dict(self._prediction_cache[cache_key]),
+                    total_frames=len(frame_keys),
+                    count_metrics=count_metrics,
+                )
                 self._end_operation()
                 return result
 
@@ -414,7 +418,7 @@ class NewFaceVisionEngine:
             if len(self._prediction_cache) > 100:
                 self._prediction_cache.pop(next(iter(self._prediction_cache)))
             self._prediction_cache[cache_key] = dict(result)
-            result = self._record_frame_result(result, total_frames=len(frame_keys))
+            result = self._record_frame_result(result, total_frames=len(frame_keys), count_metrics=count_metrics)
             self._end_operation()
 
             return result
@@ -422,6 +426,28 @@ class NewFaceVisionEngine:
         except Exception as e:
             _log.error(f"Failed to process frame: {e}")
             return self._fail_operation(str(e), code="frame_processing_failed")
+
+    def process_relative_frame(self, delta: int) -> dict[str, Any]:
+        if not self._frames:
+            self._begin_operation("process_frame", "Process frame")
+            return self._fail_operation("No frames loaded", code="frames_missing")
+
+        total_frames = len(self._frames)
+        try:
+            step = int(delta)
+        except Exception:
+            step = 1
+
+        latest_idx = self._latest.get("frame_idx") if isinstance(self._latest, Mapping) else None
+        try:
+            base_idx = int(latest_idx) if latest_idx is not None else int(self._current_frame_idx)
+        except Exception:
+            base_idx = 0
+        if latest_idx is None and step < 0:
+            base_idx = int(self._current_frame_idx) - 1
+
+        target_idx = (base_idx + step) % total_frames
+        return self.process_frame(target_idx, count_metrics=False)
 
     def reset(self) -> dict[str, Any]:
         self._begin_operation("reset", "Reset")
@@ -612,7 +638,13 @@ class NewFaceVisionEngine:
             },
         }
 
-    def _record_frame_result(self, result: Mapping[str, Any], *, total_frames: int) -> dict[str, Any]:
+    def _record_frame_result(
+        self,
+        result: Mapping[str, Any],
+        *,
+        total_frames: int,
+        count_metrics: bool = True,
+    ) -> dict[str, Any]:
         if not result.get("ok"):
             return dict(result)
         frame_idx = int(result.get("frame_idx") or 0)
@@ -651,9 +683,13 @@ class NewFaceVisionEngine:
             },
             "ts": time.time(),
         }
-        self._processed_frames += 1
-        self._dice_sum += self._numeric(metrics.get("dice"))
-        self._iou_sum += self._numeric(metrics.get("iou"))
+        if not count_metrics:
+            recorded["navigation"] = True
+            self._latest["navigation"] = True
+        else:
+            self._processed_frames += 1
+            self._dice_sum += self._numeric(metrics.get("dice"))
+            self._iou_sum += self._numeric(metrics.get("iou"))
         self.last_error = None
         self._current_frame_idx = (frame_idx + 1) % total_frames if total_frames > 0 else 0
         self._playback = {
