@@ -1,6 +1,6 @@
 {
   "id": "new_face_vision_scenario",
-  "version": "0.2.0",
+  "version": "0.2.3",
   "name": "new_face_vision",
   "type": "desktop",
   "title": "New Face Vision",
@@ -19,10 +19,9 @@
         },
         "actions": [
           {
-            "id": "load_model",
-            "label": "Load model",
-            "trigger": "button",
-            "tool": "new_face_vision_skill.new_face_vision_load_model",
+            "id": "upload",
+            "label": "Upload assets",
+            "trigger": "modal",
             "next_state": "ready"
           }
         ]
@@ -32,23 +31,24 @@
         "context": {
           "edit": [],
           "readonly": [
-            "model_loaded"
+            "model_loaded",
+            "total_frames"
           ]
         },
         "actions": [
           {
-            "id": "load_frames",
-            "label": "Load frames",
+            "id": "play",
+            "label": "Play",
             "trigger": "button",
-            "tool": "new_face_vision_skill.new_face_vision_load_frames",
-            "next_state": "ready"
+            "tool": "new_face_vision_skill.new_face_vision_play",
+            "next_state": "analyze"
           },
           {
-            "id": "load_masks",
-            "label": "Load masks",
+            "id": "step",
+            "label": "Step",
             "trigger": "button",
-            "tool": "new_face_vision_skill.new_face_vision_load_masks",
-            "next_state": "ready"
+            "tool": "new_face_vision_skill.new_face_vision_play_step",
+            "next_state": "analyze"
           }
         ]
       },
@@ -58,23 +58,31 @@
           "edit": [],
           "readonly": [
             "current_frame",
-            "preview"
+            "preview",
+            "metrics"
           ]
         },
         "actions": [
           {
-            "id": "next_frame",
-            "label": "Next frame",
+            "id": "pause",
+            "label": "Pause",
             "trigger": "button",
-            "tool": "new_face_vision_skill.new_face_vision_play_step",
-            "next_state": "analyze"
+            "tool": "new_face_vision_skill.new_face_vision_pause",
+            "next_state": "ready"
           },
           {
-            "id": "reset",
-            "label": "Reset",
+            "id": "stop",
+            "label": "Stop",
             "trigger": "button",
-            "tool": "new_face_vision_skill.new_face_vision_reset",
+            "tool": "new_face_vision_skill.new_face_vision_stop",
             "next_state": "ready"
+          },
+          {
+            "id": "replay",
+            "label": "Replay",
+            "trigger": "button",
+            "tool": "new_face_vision_skill.new_face_vision_replay",
+            "next_state": "analyze"
           },
           {
             "id": "clear",
@@ -100,113 +108,131 @@
             "pattern": "split",
             "areas": [
               {
-                "id": "sidebar",
-                "role": "sidebar"
-              },
-              {
                 "id": "main",
                 "role": "main"
               },
               {
                 "id": "right",
                 "role": "aux"
-              },
-              {
-                "id": "bottom",
-                "role": "footer"
               }
             ]
           },
           "widgets": [
             {
-              "id": "model-upload",
-              "type": "input.fileUpload",
-              "area": "right",
-              "title": "Model file",
-              "inputs": {
-                "skill": "new_face_vision_skill",
-                "purpose": "model",
-                "accept": ".pt,.pth,.onnx,application/octet-stream",
-                "label": "Upload model",
-                "maxBytes": 1073741824
+              "id": "frame-stream",
+              "type": "visual.frameViewer",
+              "area": "main",
+              "title": "Preview",
+              "dataSource": {
+                "kind": "stream",
+                "receiver": "newface_vision_frame"
               },
-              "actions": [
-                {
-                  "on": "uploaded",
-                  "type": "callSkill",
-                  "target": "new_face_vision_skill.new_face_vision_load_model",
-                  "params": {
-                    "artifact_ref": "$event.artifact_ref"
+              "inputs": {
+                "imageField": "image.src",
+                "aspectRatio": "4 / 1",
+                "emptyText": "Load frames, then press Play or Step.",
+                "metrics": [
+                  {
+                    "label": "Pred",
+                    "path": "prediction.pred_ratio"
+                  },
+                  {
+                    "label": "True",
+                    "path": "prediction.true_ratio"
+                  },
+                  {
+                    "label": "Dice",
+                    "path": "metrics.dice"
+                  },
+                  {
+                    "label": "IoU",
+                    "path": "metrics.iou"
                   }
-                }
-              ]
+                ]
+              }
             },
             {
-              "id": "frames-upload",
-              "type": "input.fileUpload",
-              "area": "right",
-              "title": "Frames ZIP",
+              "id": "controls",
+              "type": "input.commandBar",
+              "area": "main",
+              "title": "Controls",
               "inputs": {
-                "skill": "new_face_vision_skill",
-                "purpose": "frames",
-                "accept": ".zip,application/zip",
-                "label": "Upload frames",
-                "maxBytes": 1073741824
+                "size": "small",
+                "buttons": [
+                  {
+                    "id": "upload",
+                    "label": "Upload"
+                  },
+                  {
+                    "id": "play",
+                    "label": "Play"
+                  },
+                  {
+                    "id": "step",
+                    "label": "Step"
+                  },
+                  {
+                    "id": "pause",
+                    "label": "Pause"
+                  },
+                  {
+                    "id": "stop",
+                    "label": "Stop"
+                  },
+                  {
+                    "id": "replay",
+                    "label": "Replay"
+                  },
+                  {
+                    "id": "clear",
+                    "label": "Clear",
+                    "kind": "danger"
+                  }
+                ]
               },
               "actions": [
                 {
-                  "on": "uploaded",
-                  "type": "callSkill",
-                  "target": "new_face_vision_skill.new_face_vision_load_frames",
+                  "on": "click:upload",
+                  "type": "openModal",
                   "params": {
-                    "artifact_ref": "$event.artifact_ref"
+                    "modalId": "newface_upload_modal"
                   }
-                }
-              ]
-            },
-            {
-              "id": "masks-upload",
-              "type": "input.fileUpload",
-              "area": "right",
-              "title": "Masks ZIP",
-              "inputs": {
-                "skill": "new_face_vision_skill",
-                "purpose": "masks",
-                "accept": ".zip,application/zip",
-                "label": "Upload masks",
-                "maxBytes": 1073741824
-              },
-              "actions": [
+                },
                 {
-                  "on": "uploaded",
+                  "on": "click:play",
                   "type": "callSkill",
-                  "target": "new_face_vision_skill.new_face_vision_load_masks",
+                  "target": "new_face_vision_skill.new_face_vision_play",
                   "params": {
-                    "artifact_ref": "$event.artifact_ref"
+                    "fps": 5
                   }
-                }
-              ]
-            },
-            {
-              "id": "metadata-upload",
-              "type": "input.fileUpload",
-              "area": "right",
-              "title": "Metadata JSONL",
-              "inputs": {
-                "skill": "new_face_vision_skill",
-                "purpose": "metadata",
-                "accept": ".jsonl,.json,application/json,text/plain",
-                "label": "Upload metadata",
-                "maxBytes": 67108864
-              },
-              "actions": [
+                },
                 {
-                  "on": "uploaded",
+                  "on": "click:step",
                   "type": "callSkill",
-                  "target": "new_face_vision_skill.new_face_vision_load_metadata",
+                  "target": "new_face_vision_skill.new_face_vision_play_step"
+                },
+                {
+                  "on": "click:pause",
+                  "type": "callSkill",
+                  "target": "new_face_vision_skill.new_face_vision_pause"
+                },
+                {
+                  "on": "click:stop",
+                  "type": "callSkill",
+                  "target": "new_face_vision_skill.new_face_vision_stop"
+                },
+                {
+                  "on": "click:replay",
+                  "type": "callSkill",
+                  "target": "new_face_vision_skill.new_face_vision_replay",
                   "params": {
-                    "artifact_ref": "$event.artifact_ref"
+                    "fps": 5
                   }
+                },
+                {
+                  "on": "click:clear",
+                  "type": "callSkill",
+                  "target": "new_face_vision_skill.new_face_vision_clear"
                 }
               ]
             },
@@ -237,7 +263,7 @@
               },
               "inputs": {
                 "valuePath": "status",
-                "descriptionPath": "operation.label",
+                "descriptionPath": "playback.mode",
                 "emptyText": "init"
               }
             },
@@ -273,74 +299,46 @@
               }
             },
             {
-              "id": "compact-state",
-              "type": "ui.jsonViewer",
-              "area": "bottom",
-              "title": "Compact state",
-              "dataSource": {
-                "kind": "y",
-                "path": "data/new_face_vision/current"
-              }
-            },
-            {
-              "id": "frame-stream",
-              "type": "visual.frameViewer",
-              "area": "main",
-              "title": "Preview",
-              "dataSource": {
-                "kind": "stream",
-                "receiver": "newface_vision_frame"
-              },
-              "inputs": {
-                "imageField": "image.src",
-                "aspectRatio": "16 / 9",
-                "emptyText": "No frame yet",
-                "metrics": [
-                  {
-                    "label": "Pred",
-                    "path": "prediction.pred_ratio"
-                  },
-                  {
-                    "label": "True",
-                    "path": "prediction.true_ratio"
-                  },
-                  {
-                    "label": "Dice",
-                    "path": "metrics.dice"
-                  },
-                  {
-                    "label": "IoU",
-                    "path": "metrics.iou"
-                  }
-                ]
-              }
-            },
-            {
-              "id": "latest-result",
+              "id": "masks-state",
               "type": "visual.metricTile",
               "area": "right",
-              "title": "Latest frame",
+              "title": "Masks",
               "dataSource": {
                 "kind": "y",
-                "path": "data/new_face_vision/current/latest"
+                "path": "data/new_face_vision/current/stats"
               },
               "inputs": {
-                "valuePath": "label",
-                "descriptionPath": "description",
-                "emptyText": "--"
+                "valuePath": "loaded_masks",
+                "format": "integer",
+                "descriptionPath": "loaded_metadata"
+              }
+            },
+            {
+              "id": "dice-state",
+              "type": "visual.metricTile",
+              "area": "right",
+              "title": "Dice avg",
+              "dataSource": {
+                "kind": "y",
+                "path": "data/new_face_vision/current/stats"
+              },
+              "inputs": {
+                "valuePath": "avg_dice",
+                "emptyText": "--",
+                "descriptionPath": "avg_iou"
               }
             },
             {
               "id": "bad-ratio-stream",
               "type": "visual.timeseriesChart",
               "area": "right",
-              "title": "Bad ratio trend",
+              "title": "Bad ratio",
               "dataSource": {
                 "kind": "stream",
                 "receiver": "newface_vision_metrics"
               },
               "inputs": {
-                "xKey": "frame_idx",
+                "xKey": "seq",
                 "yKey": "series.pred_ratio",
                 "emptyText": "No metric points"
               }
@@ -349,68 +347,28 @@
               "id": "metrics-stream",
               "type": "visual.timeseriesChart",
               "area": "right",
-              "title": "Dice trend",
+              "title": "Dice",
               "dataSource": {
                 "kind": "stream",
                 "receiver": "newface_vision_metrics"
               },
               "inputs": {
-                "xKey": "frame_idx",
+                "xKey": "seq",
                 "yKey": "series.dice",
                 "emptyText": "No metric points"
               }
-            },
-            {
-              "id": "controls",
-              "type": "input.commandBar",
-              "area": "main",
-              "title": "Controls",
-              "inputs": {
-                "buttons": [
-                  {
-                    "id": "play",
-                    "label": "Next frame",
-                    "icon": "play"
-                  },
-                  {
-                    "id": "reset",
-                    "label": "Reset",
-                    "icon": "refresh"
-                  },
-                  {
-                    "id": "clear",
-                    "label": "Clear",
-                    "icon": "trash",
-                    "kind": "danger"
-                  }
-                ]
-              },
-              "actions": [
-                {
-                  "on": "click:play",
-                  "type": "callSkill",
-                  "target": "new_face_vision_skill.new_face_vision_play_step"
-                },
-                {
-                  "on": "click:reset",
-                  "type": "callSkill",
-                  "target": "new_face_vision_skill.new_face_vision_reset"
-                },
-                {
-                  "on": "click:clear",
-                  "type": "callSkill",
-                  "target": "new_face_vision_skill.new_face_vision_clear"
-                }
-              ]
             }
           ]
         }
       },
       "modals": {
-        "load_model": {
-          "title": "Load model",
+        "newface_upload_modal": {
+          "title": "Upload assets",
+          "presentation": {
+            "kind": "modal"
+          },
           "schema": {
-            "id": "load_model",
+            "id": "newface_upload_modal",
             "layout": {
               "type": "single",
               "pattern": "stack",
@@ -422,6 +380,25 @@
               ]
             },
             "widgets": [
+              {
+                "id": "loaded-files",
+                "type": "ui.list",
+                "area": "main",
+                "title": "Loaded files",
+                "dataSource": {
+                  "kind": "y",
+                  "path": "data/new_face_vision/current/file_items"
+                },
+                "inputs": {
+                  "titleKey": "label",
+                  "subtitleKey": "updated_at",
+                  "iconKey": "icon",
+                  "emptyText": "No files loaded",
+                  "itemAccordion": true,
+                  "detailsPath": "details",
+                  "inset": true
+                }
+              },
               {
                 "id": "model-upload",
                 "type": "input.fileUpload",
@@ -444,25 +421,7 @@
                     }
                   }
                 ]
-              }
-            ]
-          }
-        },
-        "load_frames": {
-          "title": "Load frames",
-          "schema": {
-            "id": "load_frames",
-            "layout": {
-              "type": "single",
-              "pattern": "stack",
-              "areas": [
-                {
-                  "id": "main",
-                  "role": "main"
-                }
-              ]
-            },
-            "widgets": [
+              },
               {
                 "id": "frames-upload",
                 "type": "input.fileUpload",
@@ -485,6 +444,52 @@
                     }
                   }
                 ]
+              },
+              {
+                "id": "masks-upload",
+                "type": "input.fileUpload",
+                "area": "main",
+                "title": "Masks ZIP",
+                "inputs": {
+                  "skill": "new_face_vision_skill",
+                  "purpose": "masks",
+                  "accept": ".zip,application/zip",
+                  "label": "Upload masks",
+                  "maxBytes": 1073741824
+                },
+                "actions": [
+                  {
+                    "on": "uploaded",
+                    "type": "callSkill",
+                    "target": "new_face_vision_skill.new_face_vision_load_masks",
+                    "params": {
+                      "artifact_ref": "$event.artifact_ref"
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "metadata-upload",
+                "type": "input.fileUpload",
+                "area": "main",
+                "title": "Metadata JSONL",
+                "inputs": {
+                  "skill": "new_face_vision_skill",
+                  "purpose": "metadata",
+                  "accept": ".jsonl,.json,application/json,text/plain",
+                  "label": "Upload metadata",
+                  "maxBytes": 67108864
+                },
+                "actions": [
+                  {
+                    "on": "uploaded",
+                    "type": "callSkill",
+                    "target": "new_face_vision_skill.new_face_vision_load_metadata",
+                    "params": {
+                      "artifact_ref": "$event.artifact_ref"
+                    }
+                  }
+                ]
               }
             ]
           }
@@ -494,7 +499,9 @@
   },
   "registry": {
     "widgets": [],
-    "modals": []
+    "modals": [
+      "newface_upload_modal"
+    ]
   },
   "catalog": {
     "apps": [],

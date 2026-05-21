@@ -1,9 +1,9 @@
 id: new_face_vision_scenario
-version: 0.2.1
+version: 0.2.4
 title: New Face Vision
 description: Desktop scenario for frame analysis through new_face_vision_skill.
 type: desktop
 depends:
 - new_face_vision_skill
-updated_at: '2026-05-16T14:32:19+00:00'
+updated_at: '2026-05-21T07:09:03+00:00'
 
