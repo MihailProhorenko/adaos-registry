@@ -44,10 +44,10 @@
             "next_state": "analyze"
           },
           {
-            "id": "step",
-            "label": "Step",
+            "id": "step_forward",
+            "label": "Step Forward",
             "trigger": "button",
-            "tool": "new_face_vision_skill.new_face_vision_play_step",
+            "tool": "new_face_vision_skill.new_face_vision_step_forward",
             "next_state": "analyze"
           }
         ]
@@ -63,6 +63,20 @@
           ]
         },
         "actions": [
+          {
+            "id": "step_back",
+            "label": "Step Back",
+            "trigger": "button",
+            "tool": "new_face_vision_skill.new_face_vision_step_back",
+            "next_state": "analyze"
+          },
+          {
+            "id": "step_forward",
+            "label": "Step Forward",
+            "trigger": "button",
+            "tool": "new_face_vision_skill.new_face_vision_step_forward",
+            "next_state": "analyze"
+          },
           {
             "id": "pause",
             "label": "Pause",
@@ -114,6 +128,10 @@
               {
                 "id": "right",
                 "role": "aux"
+              },
+              {
+                "id": "bottom",
+                "role": "footer"
               }
             ]
           },
@@ -130,7 +148,7 @@
               "inputs": {
                 "imageField": "image.src",
                 "aspectRatio": "4 / 1",
-                "emptyText": "Load frames, then press Play or Step.",
+                "emptyText": "Load frames, then press Play or Step Forward.",
                 "metrics": [
                   {
                     "label": "Pred",
@@ -168,8 +186,12 @@
                     "label": "Play"
                   },
                   {
-                    "id": "step",
-                    "label": "Step"
+                    "id": "step_back",
+                    "label": "Step Back"
+                  },
+                  {
+                    "id": "step_forward",
+                    "label": "Step Forward"
                   },
                   {
                     "id": "pause",
@@ -207,9 +229,14 @@
                   }
                 },
                 {
-                  "on": "click:step",
+                  "on": "click:step_back",
                   "type": "callSkill",
-                  "target": "new_face_vision_skill.new_face_vision_play_step"
+                  "target": "new_face_vision_skill.new_face_vision_step_back"
+                },
+                {
+                  "on": "click:step_forward",
+                  "type": "callSkill",
+                  "target": "new_face_vision_skill.new_face_vision_step_forward"
                 },
                 {
                   "on": "click:pause",
@@ -331,7 +358,7 @@
             {
               "id": "bad-ratio-stream",
               "type": "visual.timeseriesChart",
-              "area": "main",
+              "area": "bottom",
               "title": "Bad ratio",
               "dataSource": {
                 "kind": "stream",
@@ -346,7 +373,7 @@
             {
               "id": "metrics-stream",
               "type": "visual.timeseriesChart",
-              "area": "main",
+              "area": "bottom",
               "title": "Dice",
               "dataSource": {
                 "kind": "stream",
