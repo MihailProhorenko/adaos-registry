@@ -41,6 +41,13 @@ except Exception as exc:
 
 _log = logging.getLogger("new_face_vision.engine")
 
+_PREVIEW_MAX_WIDTH = 640
+_PREVIEW_MAX_HEIGHT = 180
+_PREVIEW_MIN_WIDTH = 320
+_PREVIEW_MIN_HEIGHT = 90
+_PREVIEW_JPEG_MAX_BYTES = 12_000
+_PREVIEW_JPEG_QUALITIES = (62, 54, 46, 38, 32)
+
 
 class NewFaceVisionEngine:
     def __init__(self, state_dir: Path):
@@ -371,10 +378,7 @@ class NewFaceVisionEngine:
                 predicted_mask = self._create_dummy_prediction(frame)
 
             side_by_side = self._create_side_by_side_image(frame, gt_mask, predicted_mask)
-
-            buffered = io.BytesIO()
-            side_by_side.save(buffered, format="JPEG", quality=85, optimize=True)
-            preview_base64 = base64.b64encode(buffered.getvalue()).decode()
+            preview_base64 = self._encode_preview_jpeg(side_by_side)
 
             pred_ratio = float(np.mean(np.array(predicted_mask) > 0))
 
@@ -545,7 +549,7 @@ class NewFaceVisionEngine:
             "image": {
                 "mime": "image/jpeg",
                 "encoding": "base64",
-                "data": preview,
+                "data": "",
                 "src": f"data:image/jpeg;base64,{preview}" if preview else "",
             },
             "prediction": {
@@ -1046,6 +1050,31 @@ class NewFaceVisionEngine:
             pred = (prob > self._threshold).astype(np.uint8) * 255
 
         return pred, prob
+
+    def _encode_preview_jpeg(self, image: Image.Image) -> str:
+        preview = image.convert("RGB")
+        resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS", getattr(Image, "LANCZOS", 1))
+        max_width = _PREVIEW_MAX_WIDTH
+        max_height = _PREVIEW_MAX_HEIGHT
+        best_bytes = b""
+
+        while True:
+            resized = preview.copy()
+            resized.thumbnail((max_width, max_height), resampling)
+
+            for quality in _PREVIEW_JPEG_QUALITIES:
+                buffered = io.BytesIO()
+                resized.save(buffered, format="JPEG", quality=quality, optimize=True)
+                jpeg_bytes = buffered.getvalue()
+                if not best_bytes or len(jpeg_bytes) < len(best_bytes):
+                    best_bytes = jpeg_bytes
+                if len(jpeg_bytes) <= _PREVIEW_JPEG_MAX_BYTES:
+                    return base64.b64encode(jpeg_bytes).decode()
+
+            if max_width <= _PREVIEW_MIN_WIDTH and max_height <= _PREVIEW_MIN_HEIGHT:
+                return base64.b64encode(best_bytes).decode()
+            max_width = max(_PREVIEW_MIN_WIDTH, int(max_width * 0.75))
+            max_height = max(_PREVIEW_MIN_HEIGHT, int(max_height * 0.75))
 
     def _create_side_by_side_image(self, original: Image.Image, gt_mask: Image.Image | None = None, pred_mask: Image.Image | None = None) -> Image.Image:
         if original.mode != 'RGB':

@@ -9,7 +9,7 @@
         "sequenceField": "seq",
         "updatedAtField": "ts",
         "budget": {
-          "maxPayloadBytes": 1048576,
+          "maxPayloadBytes": 65536,
           "maxPublishHz": 30,
           "coalesceMs": 33,
           "maxItems": 1
@@ -321,7 +321,7 @@
             {
               "id": "newface_modal_ratio_chart",
               "type": "visual.timeseriesChart",
-              "area": "right",
+              "area": "main",
               "title": "Bad ratio",
               "dataSource": {
                 "kind": "stream",
@@ -336,7 +336,7 @@
             {
               "id": "newface_modal_metrics_chart",
               "type": "visual.timeseriesChart",
-              "area": "right",
+              "area": "main",
               "title": "Dice",
               "dataSource": {
                 "kind": "stream",
@@ -385,7 +385,8 @@
                 "emptyText": "No files loaded",
                 "itemAccordion": true,
                 "detailsPath": "details",
-                "inset": true
+                "inset": true,
+                "refreshOnStateEmit": true
               }
             },
             {
