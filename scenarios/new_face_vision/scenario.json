@@ -331,7 +331,7 @@
             {
               "id": "bad-ratio-stream",
               "type": "visual.timeseriesChart",
-              "area": "right",
+              "area": "main",
               "title": "Bad ratio",
               "dataSource": {
                 "kind": "stream",
@@ -346,7 +346,7 @@
             {
               "id": "metrics-stream",
               "type": "visual.timeseriesChart",
-              "area": "right",
+              "area": "main",
               "title": "Dice",
               "dataSource": {
                 "kind": "stream",
@@ -396,7 +396,8 @@
                   "emptyText": "No files loaded",
                   "itemAccordion": true,
                   "detailsPath": "details",
-                  "inset": true
+                  "inset": true,
+                  "refreshOnStateEmit": true
                 }
               },
               {
