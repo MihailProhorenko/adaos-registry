@@ -189,6 +189,7 @@
               "inputs": {
                 "imageField": "image.src",
                 "aspectRatio": "4 / 1",
+                "retainLastImageOnEmpty": true,
                 "emptyText": "Load frames, then press Play or Step Forward.",
                 "metrics": [
                   { "label": "Pred", "path": "prediction.pred_ratio" },
@@ -330,44 +331,64 @@
               "title": "Bad ratio",
               "dataSource": {
                 "kind": "y",
-                "path": "data/new_face_vision/current/latest"
+                "path": "data/new_face_vision/current/quality"
               },
               "inputs": {
-                "valuePath": "pred_ratio",
+                "valuePath": "bad_ratio",
                 "format": "percent",
                 "emptyText": "--%",
-                "descriptionPath": "description"
+                "labelPath": "label",
+                "descriptionPath": "description",
+                "colorPath": "color"
               }
             },
             {
-              "id": "newface_modal_frames",
+              "id": "newface_modal_status",
               "type": "visual.metricTile",
               "area": "right",
-              "title": "Frames",
+              "title": "Status",
+              "dataSource": {
+                "kind": "y",
+                "path": "data/new_face_vision/current/activity"
+              },
+              "inputs": {
+                "valuePath": "label",
+                "descriptionPath": "description",
+                "colorPath": "color",
+                "emptyText": "init"
+              }
+            },
+            {
+              "id": "newface_modal_threshold",
+              "type": "visual.metricTile",
+              "area": "right",
+              "title": "Threshold",
+              "dataSource": {
+                "kind": "y",
+                "path": "data/new_face_vision/current/quality"
+              },
+              "inputs": {
+                "valuePath": "threshold",
+                "format": "percent",
+                "emptyText": "--%",
+                "descriptionPath": "threshold_label"
+              }
+            },
+            {
+              "id": "newface_modal_fps",
+              "type": "visual.metricTile",
+              "area": "right",
+              "title": "FPS",
               "dataSource": {
                 "kind": "y",
                 "path": "data/new_face_vision/current/stats"
               },
               "inputs": {
-                "valuePath": "total_frames",
-                "format": "integer",
-                "descriptionPath": "next_frame"
-              }
-            },
-            {
-              "id": "newface_modal_model",
-              "type": "visual.metricTile",
-              "area": "right",
-              "title": "Model",
-              "dataSource": {
-                "kind": "y",
-                "path": "data/new_face_vision/current/model"
-              },
-              "inputs": {
-                "valuePath": "loaded",
-                "format": "boolean",
-                "trueText": "Loaded",
-                "falseText": "No model"
+                "valuePath": "fps",
+                "format": "number",
+                "decimals": 1,
+                "emptyText": "--",
+                "descriptionPath": "target_fps"
               }
             },
             {
@@ -616,6 +637,22 @@
         "progress": null,
         "error": null
       },
+      "activity": {
+        "value": "init",
+        "label": "init",
+        "description": "",
+        "color": "medium"
+      },
+      "quality": {
+        "value": null,
+        "bad_ratio": null,
+        "threshold": 0.05,
+        "threshold_label": "5%",
+        "label": "--",
+        "state": "unknown",
+        "color": "medium",
+        "description": "Threshold 5%"
+      },
       "files": {
         "model": null,
         "frames": null,
@@ -649,6 +686,8 @@
         "avg_dice": null,
         "avg_iou": null,
         "fps": 5,
+        "actual_fps": null,
+        "target_fps": 5,
         "run_id": 1,
         "cached_results": 0,
         "cache_hits": 0,

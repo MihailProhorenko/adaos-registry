@@ -90,6 +90,8 @@ class NewFaceVisionEngine:
         self._dice_sum = 0.0
         self._iou_sum = 0.0
         self._target_fps = 5.0
+        self._actual_fps: float | None = None
+        self._recent_frame_ts: list[float] = []
         self._playback: dict[str, Any] = {
             "mode": "idle",
             "fps": self._target_fps,
@@ -418,7 +420,7 @@ class NewFaceVisionEngine:
 
     def process_frame(self, frame_idx: int | None = None, *, count_metrics: bool = True) -> dict[str, Any]:
         try:
-            self._begin_operation("process_frame", "Process frame")
+            self._begin_operation("process_frame", "Calculate")
             deps_ok, deps_details = self._ensure_image_dependencies()
             if not deps_ok:
                 return self._fail_operation(
@@ -432,29 +434,16 @@ class NewFaceVisionEngine:
             if not self._frames:
                 return self._fail_operation("No frames loaded", code="frames_missing")
 
-            frame_keys = sorted(self._frames.keys())
-
-            if frame_idx is None:
-                frame_idx = self._current_frame_idx
-
-            if frame_idx >= len(frame_keys):
-                frame_idx = 0
-            if frame_idx < 0:
-                frame_idx = len(frame_keys) - 1
-
-            frame_key = frame_keys[frame_idx]
-            frame_path = self._frames[frame_key]
-            mask_path = self._mask_path_for_frame(frame_key)
-            true_ratio = None
-            if frame_idx in self._metadata:
-                true_ratio = self._metadata[frame_idx].get('ratio_bad_true')
-            cache_key = self._result_cache_key(
-                frame_idx=frame_idx,
-                frame_key=frame_key,
-                frame_path=frame_path,
-                mask_path=mask_path,
-                true_ratio=true_ratio,
-            )
+            frame_ctx = self._frame_context(frame_idx)
+            if not frame_ctx:
+                return self._fail_operation("No frames loaded", code="frames_missing")
+            frame_idx = int(frame_ctx["frame_idx"])
+            frame_key = str(frame_ctx["frame_key"])
+            frame_path = frame_ctx["frame_path"]
+            mask_path = frame_ctx["mask_path"]
+            true_ratio = frame_ctx["true_ratio"]
+            cache_key = str(frame_ctx["cache_key"])
+            frame_keys = list(frame_ctx["frame_keys"])
             if cache_key in self._prediction_cache:
                 self._cache_hits += 1
                 result = self._record_frame_result(
@@ -552,9 +541,15 @@ class NewFaceVisionEngine:
 
     def process_relative_frame(self, delta: int) -> dict[str, Any]:
         if not self._frames:
-            self._begin_operation("process_frame", "Process frame")
+            self._begin_operation("process_frame", "Calculate")
             return self._fail_operation("No frames loaded", code="frames_missing")
 
+        target_idx = self.resolve_relative_frame_index(delta)
+        return self.process_frame(target_idx, count_metrics=False)
+
+    def resolve_relative_frame_index(self, delta: int) -> int | None:
+        if not self._frames:
+            return None
         total_frames = len(self._frames)
         try:
             step = int(delta)
@@ -568,9 +563,26 @@ class NewFaceVisionEngine:
             base_idx = 0
         if latest_idx is None and step < 0:
             base_idx = int(self._current_frame_idx) - 1
+        return (base_idx + step) % total_frames
 
-        target_idx = (base_idx + step) % total_frames
-        return self.process_frame(target_idx, count_metrics=False)
+    def is_frame_cached(self, frame_idx: int | None = None) -> bool:
+        frame_ctx = self._frame_context(frame_idx)
+        if not frame_ctx:
+            return False
+        cache_key = str(frame_ctx["cache_key"])
+        return cache_key in self._prediction_cache or self._cache_path(cache_key).exists()
+
+    def begin_calculation_status(self, frame_idx: int | None = None) -> dict[str, Any]:
+        frame_ctx = self._frame_context(frame_idx)
+        target_idx = frame_ctx.get("frame_idx") if frame_ctx else frame_idx
+        self._begin_operation("process_frame", "Calculate")
+        self._playback = {
+            **self._playback,
+            "phase": "calculate",
+            "calculating_frame_idx": target_idx,
+            "updated_at": time.time(),
+        }
+        return {"ok": True, "frame_idx": target_idx}
 
     def reset(self) -> dict[str, Any]:
         self._begin_operation("reset", "Reset")
@@ -650,9 +662,13 @@ class NewFaceVisionEngine:
     def snapshot(self) -> dict[str, Any]:
         status = "error" if self.last_error else ("ready" if self._frames else "init")
         compute = self._compute_info()
+        quality = self._quality_info()
+        activity = self._activity_info(status)
         return {
             "ok": True,
             "status": status,
+            "activity": activity,
+            "quality": quality,
             "operation": dict(self._operation),
             "files": self._public_files(),
             "file_items": self._file_items(),
@@ -679,7 +695,9 @@ class NewFaceVisionEngine:
                 "avg_iou": self._round_optional(
                     self._iou_sum / self._processed_frames if self._processed_frames else None
                 ),
-                "fps": self._target_fps,
+                "fps": self._round_optional(self._actual_fps) if self._actual_fps is not None else self._target_fps,
+                "actual_fps": self._round_optional(self._actual_fps),
+                "target_fps": self._target_fps,
                 "run_id": self._run_id,
                 "cached_results": len(self._result_rows),
                 "cache_hits": self._cache_hits,
@@ -733,9 +751,10 @@ class NewFaceVisionEngine:
             "ts": time.time(),
         }
 
-    def empty_frame_stream_payload(self, *, label: str = "No frame") -> dict[str, Any]:
+    def empty_frame_stream_payload(self, *, label: str = "No frame", clear_image: bool = False) -> dict[str, Any]:
         return {
             "ok": True,
+            "clear_image": bool(clear_image),
             "id": f"{self._run_id}:empty:{self._seq}",
             "seq": self._seq,
             "run_id": self._run_id,
@@ -810,6 +829,7 @@ class NewFaceVisionEngine:
         if metrics:
             description_parts.append(f"dice={metrics.get('dice', 0)}")
             description_parts.append(f"iou={metrics.get('iou', 0)}")
+        now = time.time()
         self._latest = {
             "value": recorded.get("status") or "ok",
             "label": f"frame {frame_idx + 1}/{total_frames}" if total_frames else f"frame {frame_idx}",
@@ -827,7 +847,7 @@ class NewFaceVisionEngine:
                 "label": recorded.get("status"),
                 "color": recorded.get("status_color"),
             },
-            "ts": time.time(),
+            "ts": now,
         }
         if not count_metrics:
             recorded["navigation"] = True
@@ -836,6 +856,7 @@ class NewFaceVisionEngine:
             self._processed_frames += 1
             self._dice_sum += self._numeric(metrics.get("dice"))
             self._iou_sum += self._numeric(metrics.get("iou"))
+            self._record_frame_rate(now)
         self.last_error = None
         self._current_frame_idx = (frame_idx + 1) % total_frames if total_frames > 0 else 0
         self._playback = {
@@ -874,6 +895,8 @@ class NewFaceVisionEngine:
         self._processed_frames = 0
         self._dice_sum = 0.0
         self._iou_sum = 0.0
+        self._actual_fps = None
+        self._recent_frame_ts = []
         self._playback = {
             "mode": mode,
             "fps": self._target_fps,
@@ -895,6 +918,12 @@ class NewFaceVisionEngine:
             "progress": 1.0,
             "error": None,
         }
+        if self._playback.get("phase") == "calculate":
+            self._playback = {
+                **self._playback,
+                "phase": "ready",
+                "updated_at": time.time(),
+            }
         self.last_error = None
 
     def _fail_operation(
@@ -972,6 +1001,140 @@ class NewFaceVisionEngine:
         if parsed != parsed:
             return None
         return round(parsed, 4)
+
+    def _frame_context(self, frame_idx: int | None = None) -> dict[str, Any]:
+        if not self._frames:
+            return {}
+        frame_keys = sorted(self._frames.keys())
+        if frame_idx is None:
+            frame_idx = self._current_frame_idx
+        try:
+            normalized_idx = int(frame_idx)
+        except Exception:
+            normalized_idx = 0
+        if normalized_idx >= len(frame_keys):
+            normalized_idx = 0
+        if normalized_idx < 0:
+            normalized_idx = len(frame_keys) - 1
+
+        frame_key = frame_keys[normalized_idx]
+        frame_path = self._frames[frame_key]
+        mask_path = self._mask_path_for_frame(frame_key)
+        true_ratio = None
+        if normalized_idx in self._metadata:
+            true_ratio = self._metadata[normalized_idx].get("ratio_bad_true")
+        cache_key = self._result_cache_key(
+            frame_idx=normalized_idx,
+            frame_key=frame_key,
+            frame_path=frame_path,
+            mask_path=mask_path,
+            true_ratio=true_ratio,
+        )
+        return {
+            "frame_idx": normalized_idx,
+            "frame_key": frame_key,
+            "frame_path": frame_path,
+            "mask_path": mask_path,
+            "true_ratio": true_ratio,
+            "cache_key": cache_key,
+            "frame_keys": frame_keys,
+        }
+
+    def _quality_info(self) -> dict[str, Any]:
+        latest = self._latest if isinstance(self._latest, Mapping) else {}
+        ratio = self._round_optional(latest.get("pred_ratio")) if latest else None
+        threshold = self._warning_threshold
+        threshold_label = self._format_percent(threshold)
+        frame_label = str(latest.get("label") or "").strip()
+        if ratio is None:
+            return {
+                "value": None,
+                "bad_ratio": None,
+                "threshold": threshold,
+                "threshold_label": threshold_label,
+                "label": "--",
+                "state": "unknown",
+                "color": "medium",
+                "description": f"Threshold {threshold_label}",
+            }
+        defect = ratio >= threshold
+        label = "Брак" if defect else "Норма"
+        color = "danger" if defect else "success"
+        state = "defect" if defect else "normal"
+        description = f"{label}; threshold {threshold_label}"
+        if frame_label:
+            description = f"{description}; {frame_label}"
+        return {
+            "value": ratio,
+            "bad_ratio": ratio,
+            "threshold": threshold,
+            "threshold_label": threshold_label,
+            "label": label,
+            "state": state,
+            "color": color,
+            "description": description,
+        }
+
+    def _activity_info(self, status: str) -> dict[str, Any]:
+        operation = self._operation if isinstance(self._operation, Mapping) else {}
+        playback = self._playback if isinstance(self._playback, Mapping) else {}
+        progress = operation.get("progress")
+        mode = str(playback.get("mode") or "idle").strip().lower()
+        if self.last_error:
+            return {
+                "value": "error",
+                "label": "Error",
+                "description": str(self.last_error.get("message") or self.last_error.get("code") or ""),
+                "color": "danger",
+            }
+        if operation.get("id") == "process_frame" and progress != 1.0:
+            frame_idx = playback.get("calculating_frame_idx")
+            description = ""
+            if frame_idx is not None:
+                description = f"frame {int(frame_idx) + 1}/{len(self._frames)}" if self._frames else f"frame {frame_idx}"
+            return {
+                "value": "calculate",
+                "label": "Calculate",
+                "description": description,
+                "color": "warning",
+            }
+        if mode == "playing":
+            return {
+                "value": "playing",
+                "label": "Playing",
+                "description": f"FPS {self._format_number(self._target_fps)}",
+                "color": "primary",
+            }
+        if mode == "paused":
+            return {"value": "paused", "label": "Paused", "description": "", "color": "medium"}
+        if mode == "stopped":
+            return {"value": "stopped", "label": "Stopped", "description": "", "color": "medium"}
+        if status == "ready":
+            return {"value": "ready", "label": "ready", "description": "", "color": "success"}
+        return {"value": "init", "label": "init", "description": "", "color": "medium"}
+
+    def _record_frame_rate(self, timestamp: float) -> None:
+        self._recent_frame_ts.append(float(timestamp))
+        if len(self._recent_frame_ts) > 20:
+            del self._recent_frame_ts[:-20]
+        if len(self._recent_frame_ts) < 2:
+            self._actual_fps = None
+            return
+        elapsed = self._recent_frame_ts[-1] - self._recent_frame_ts[0]
+        if elapsed > 0:
+            self._actual_fps = (len(self._recent_frame_ts) - 1) / elapsed
+
+    def _format_percent(self, value: Any) -> str:
+        rounded = self._round_optional(value)
+        if rounded is None:
+            return "--%"
+        return f"{(rounded * 100):.1f}%".replace(".0%", "%")
+
+    def _format_number(self, value: Any) -> str:
+        rounded = self._round_optional(value)
+        if rounded is None:
+            return "--"
+        return f"{rounded:.2f}".rstrip("0").rstrip(".")
 
     def _compute_info(self) -> dict[str, Any]:
         deps_ok, deps_details = self._ensure_model_dependencies()

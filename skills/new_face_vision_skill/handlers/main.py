@@ -224,6 +224,17 @@ def _republish_last_frame(webspace_id: str | None) -> bool:
     return True
 
 
+def _mark_calculation_if_uncached(frame_idx: int | None, webspace_id: str | None) -> bool:
+    with _ENGINE_LOCK:
+        engine = _engine_instance()
+        if engine.is_frame_cached(frame_idx):
+            return False
+        engine.begin_calculation_status(frame_idx)
+    _project(webspace_id=webspace_id)
+    _republish_last_frame(webspace_id)
+    return True
+
+
 def _remember_metrics_payload(webspace_id: str | None, payload: dict[str, Any]) -> None:
     selected_webspace = str(webspace_id or default_webspace_id()).strip() or default_webspace_id()
     points = _metrics_points_by_webspace.setdefault(selected_webspace, [])
@@ -318,6 +329,14 @@ def _playback_loop(webspace_id: str, fps: float, stop: threading.Event) -> None:
                 playback = snapshot.get("playback") if isinstance(snapshot.get("playback"), Mapping) else {}
                 if str(playback.get("mode") or "").lower() != "playing":
                     break
+                needs_calculation = not engine.is_frame_cached(None)
+                if needs_calculation:
+                    engine.begin_calculation_status(None)
+            if needs_calculation:
+                _project(webspace_id=webspace_id)
+                _republish_last_frame(webspace_id)
+            with _ENGINE_LOCK:
+                engine = _engine_instance()
                 result = engine.process_frame(None)
             if result.get("ok"):
                 _publish_frame_result(result, webspace_id=webspace_id)
@@ -556,9 +575,16 @@ def new_face_vision_load_frames(
 ) -> dict[str, Any]:
     try:
         resolved_path = _resolve_path(path, artifact_ref, file, **payload)
-        _metrics_points_by_webspace.pop(str(webspace_id or default_webspace_id()).strip() or default_webspace_id(), None)
+        selected_webspace = str(webspace_id or default_webspace_id()).strip() or default_webspace_id()
+        _metrics_points_by_webspace.pop(selected_webspace, None)
+        _last_frame_payload_by_webspace.pop(selected_webspace, None)
         with _ENGINE_LOCK:
-            result = _engine_instance().load_frames(resolved_path, source_ref=_source_ref(path, artifact_ref, file, **payload))
+            engine = _engine_instance()
+            result = engine.load_frames(resolved_path, source_ref=_source_ref(path, artifact_ref, file, **payload))
+            empty_frame = engine.empty_frame_stream_payload(label="No frame", clear_image=True) if result.get("ok") else None
+        if empty_frame:
+            _remember_frame_payload(selected_webspace, empty_frame)
+            _publish_stream(FRAME_RECEIVER, empty_frame, webspace_id=selected_webspace, force=True)
         return _result_with_snapshot(result, webspace_id=webspace_id)
     except Exception as exc:
         return _handle_error(exc, webspace_id=webspace_id)
@@ -606,6 +632,7 @@ def new_face_vision_process_frame(
 ) -> dict[str, Any]:
     try:
         _republish_last_frame(webspace_id)
+        _mark_calculation_if_uncached(frame_idx, webspace_id)
         with _ENGINE_LOCK:
             engine = _engine_instance()
             result = engine.process_frame(frame_idx)
@@ -632,6 +659,9 @@ def new_face_vision_step_forward(webspace_id: str | None = None, **_: Any) -> di
 def new_face_vision_step_back(webspace_id: str | None = None, **_: Any) -> dict[str, Any]:
     try:
         _republish_last_frame(webspace_id)
+        with _ENGINE_LOCK:
+            target_idx = _engine_instance().resolve_relative_frame_index(-1)
+        _mark_calculation_if_uncached(target_idx, webspace_id)
         with _ENGINE_LOCK:
             engine = _engine_instance()
             result = engine.process_relative_frame(-1)
@@ -728,7 +758,7 @@ def new_face_vision_clear(webspace_id: str | None = None, **_: Any) -> dict[str,
         with _ENGINE_LOCK:
             engine = _engine_instance()
             result = engine.clear()
-            empty_frame = engine.empty_frame_stream_payload(label="No frame")
+            empty_frame = engine.empty_frame_stream_payload(label="No frame", clear_image=True)
         _publish_stream(FRAME_RECEIVER, empty_frame, webspace_id=webspace_id, force=True)
         return _result_with_snapshot(result, webspace_id=webspace_id)
     except Exception as exc:
