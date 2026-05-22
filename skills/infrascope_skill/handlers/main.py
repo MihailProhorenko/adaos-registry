@@ -95,6 +95,7 @@ _stream_snapshot_guard = threading.Lock()
 _stream_snapshot_locks: dict[str, threading.Lock] = {}
 _last_refresh_at_mono = 0.0
 _MIN_YJS_PROJECTION_INTERVAL_S = 1.0
+_MAX_LAST_GOOD_SNAPSHOTS = 16
 _stream_request_diag = {
     "requested_total": 0,
     "forced_total": 0,
@@ -145,6 +146,60 @@ def _invalidate_projection_state(*, webspace_id: str | None = None) -> None:
     _last_projected_at_mono.clear()
     _last_stream_fingerprints.clear()
     _stream_request_seen_at.clear()
+
+
+def _cleanup_runtime_state(*, reason: str = "lifecycle") -> dict[str, Any]:
+    global _background_refresh_task
+    global _background_refresh_pending_all
+    global _background_refresh_reason
+    global _last_refresh_at_mono
+    task_cancelled = False
+    task = _background_refresh_task
+    if task is not None and not task.done():
+        task.cancel()
+        task_cancelled = True
+    _background_refresh_task = None
+    _background_refresh_pending_all = False
+    _background_refresh_webspace_ids.clear()
+    _background_refresh_reason = ""
+    _last_refresh_at_mono = 0.0
+    snapshot_total = len(_last_good_snapshots)
+    receiver_total = sum(len(receivers) for receivers in _active_stream_receivers_by_webspace.values())
+    lock_total = len(_stream_snapshot_locks)
+    _last_projected_fingerprints.clear()
+    _last_projected_at_mono.clear()
+    _last_good_snapshots.clear()
+    _active_stream_receivers_by_webspace.clear()
+    _last_stream_fingerprints.clear()
+    _stream_request_seen_at.clear()
+    with _stream_snapshot_guard:
+        _stream_snapshot_locks.clear()
+    _log.info(
+        "infrascope lifecycle cleanup reason=%s task_cancelled=%s snapshots=%s active_receivers=%s locks=%s",
+        reason,
+        task_cancelled,
+        snapshot_total,
+        receiver_total,
+        lock_total,
+    )
+    return {
+        "ok": True,
+        "reason": reason,
+        "background_task_cancelled": task_cancelled,
+        "snapshot_total": snapshot_total,
+        "active_receiver_total": receiver_total,
+        "stream_lock_total": lock_total,
+    }
+
+
+@tool("infrascope_runtime_drain")
+def infrascope_runtime_drain(reason: str = "drain", **_: Any) -> dict[str, Any]:
+    return _cleanup_runtime_state(reason=reason or "drain")
+
+
+@tool("infrascope_runtime_dispose")
+def infrascope_runtime_dispose(reason: str = "dispose", **_: Any) -> dict[str, Any]:
+    return _cleanup_runtime_state(reason=reason or "dispose")
 
 
 def _eager_stream_publish_enabled() -> bool:
@@ -936,45 +991,19 @@ def _inspector_payload_from_snapshot(snapshot: dict[str, Any], object_id: str) -
 
 
 def _publish_snapshot_streams(snapshot: dict[str, Any], *, webspace_id: str) -> None:
-    if not _eager_stream_publish_enabled():
-        for receiver in _active_stream_receivers(webspace_id):
-            payload = _stream_payload_for_receiver(snapshot, receiver)
-            if payload is not None:
-                _publish_stream_payload(receiver, payload, webspace_id=webspace_id)
-        return
-    for section in _OVERVIEW_SECTIONS:
-        _publish_stream_payload(
-            _overview_receiver(section),
-            _stream_payload_for_receiver(snapshot, _overview_receiver(section)),
-            webspace_id=webspace_id,
-        )
-    for kind in _INVENTORY_KINDS:
-        _publish_stream_payload(
-            _inventory_receiver(kind),
-            _stream_payload_for_receiver(snapshot, _inventory_receiver(kind)),
-            webspace_id=webspace_id,
-        )
-    _publish_stream_payload(
-        _operations_receiver(),
-        _stream_payload_for_receiver(snapshot, _operations_receiver()),
-        webspace_id=webspace_id,
-    )
-    inspectors = coerce_mapping(snapshot.get("inspectors"))
-    for object_id in inspectors.keys():
-        token = str(object_id or "").strip()
-        if not token:
-            continue
-        _publish_stream_payload(
-            _inspector_receiver(token),
-            _stream_payload_for_receiver(snapshot, _inspector_receiver(token)),
-            webspace_id=webspace_id,
-        )
-        for field in ("incidents", "topology", "task_packet", "subnet_planning", "actions"):
-            _publish_stream_payload(
-                _inspector_field_receiver(token, field),
-                _stream_payload_for_receiver(snapshot, _inspector_field_receiver(token, field)),
-                webspace_id=webspace_id,
+    if _eager_stream_publish_enabled():
+        total = int(_stream_request_diag.get("eager_stream_publish_suppressed_total") or 0) + 1
+        _stream_request_diag["eager_stream_publish_suppressed_total"] = total
+        if total == 1 or total % 50 == 0:
+            _log.warning(
+                "infrascope eager stream fanout ignored; publishing only active subscriptions webspace=%s total=%s",
+                webspace_id,
+                total,
             )
+    for receiver in _active_stream_receivers(webspace_id):
+        payload = _stream_payload_for_receiver(snapshot, receiver)
+        if payload is not None:
+            _publish_stream_payload(receiver, payload, webspace_id=webspace_id)
 
 
 def _project_snapshot(snapshot: dict[str, Any], *, webspace_id: str) -> bool:
@@ -1021,7 +1050,14 @@ def _stream_snapshot_for_subscribe(webspace_id: str) -> dict[str, Any]:
 
 
 def _remember_good_snapshot(snapshot: dict[str, Any], *, webspace_id: str | None = None) -> None:
-    _last_good_snapshots[_snapshot_cache_key(webspace_id=webspace_id)] = deepcopy(snapshot)
+    key = _snapshot_cache_key(webspace_id=webspace_id)
+    _last_good_snapshots.pop(key, None)
+    _last_good_snapshots[key] = deepcopy(snapshot)
+    while len(_last_good_snapshots) > _MAX_LAST_GOOD_SNAPSHOTS:
+        oldest_key = next(iter(_last_good_snapshots), None)
+        if oldest_key is None:
+            break
+        _last_good_snapshots.pop(oldest_key, None)
 
 
 def _record_snapshot_error(errors: list[str], section: str, exc: Exception) -> None:

@@ -1,5 +1,5 @@
 name: infrascope_skill
-version: 0.28.5
+version: 0.28.6
 entry: handlers/main.py
 runtime:
   python: '3.11'
@@ -230,7 +230,30 @@ data_projections:
   targets:
   - backend: yjs
     path: data/infrascope
+lifecycle:
+  drain: infrascope_runtime_drain
+  dispose: infrascope_runtime_dispose
 tools:
+- name: infrascope_runtime_drain
+  description: Stop pending Infrascope refresh work and clear transient stream caches.
+  entry: handlers.main:infrascope_runtime_drain
+  input_schema:
+    type: object
+    properties:
+      reason:
+        type: string
+  output_schema:
+    type: object
+- name: infrascope_runtime_dispose
+  description: Dispose Infrascope transient stream/projection state.
+  entry: handlers.main:infrascope_runtime_dispose
+  input_schema:
+    type: object
+    properties:
+      reason:
+        type: string
+  output_schema:
+    type: object
 - name: get_overview_summary
   description: Return the summary tile payload for the Infrascope overview.
   entry: handlers.main:get_overview_summary
@@ -347,5 +370,5 @@ tools:
     type: object
 exports: {}
 prototype: default
-updated_at: '2026-05-20T17:34:29+00:00'
+updated_at: '2026-05-22T14:17:40+00:00'
 
