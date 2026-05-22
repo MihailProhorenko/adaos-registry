@@ -12,13 +12,14 @@ from adaos.sdk.core.decorators import subscribe, tool
 from adaos.sdk.data import ctx_subnet
 from adaos.sdk.data import root_mcp as sdk_root_mcp
 
-_CACHE: dict[str, Any] = {"ts": 0.0, "snapshot": None}
+_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _CACHE_TTL_S = 5.0
 _log = logging.getLogger("skills.infra_access_skill")
 _LAST_ISSUED: dict[str, Any] = {}
 _REFRESH_THREAD: threading.Thread | None = None
 _REFRESH_LOCK = threading.Lock()
-_PROJECTION_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="infra-access-projection")
+_PROJECTION_EXECUTOR: ThreadPoolExecutor | None = None
+_PROJECTION_EXECUTOR_LOCK = threading.Lock()
 _DATA_PROJECTION_ENTRIES = [
     {
         "scope": "subnet",
@@ -35,6 +36,14 @@ _DATA_PROJECTION_ENTRIES = [
 
 def lang_res() -> Dict[str, str]:
     return {}
+
+
+def _projection_executor() -> ThreadPoolExecutor:
+    global _PROJECTION_EXECUTOR
+    with _PROJECTION_EXECUTOR_LOCK:
+        if _PROJECTION_EXECUTOR is None:
+            _PROJECTION_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="infra-access-projection")
+        return _PROJECTION_EXECUTOR
 
 
 def _iso_now() -> str:
@@ -78,6 +87,10 @@ def _managed_target_id_for_root_mcp(target_id: str | None) -> str | None:
     # UI node selectors are not Root MCP managed targets. Let the SDK infer the
     # local hub target instead of forwarding a node UUID to the target registry.
     return None
+
+
+def _snapshot_cache_key(managed_target_id: str | None) -> str:
+    return str(managed_target_id or "__local__").strip() or "__local__"
 
 
 def _format_when(value: Any) -> str:
@@ -568,7 +581,7 @@ def _project(snapshot: dict[str, Any], *, webspace_id: str | None = None) -> Non
     except RuntimeError:
         asyncio.run(_project_async(snapshot, webspace_id=webspace_id))
         return
-    _PROJECTION_EXECUTOR.submit(
+    _projection_executor().submit(
         lambda: asyncio.run(_project_async(snapshot, webspace_id=webspace_id))
     ).result()
 
@@ -600,9 +613,12 @@ def _schedule_subscription_refresh(*, webspace_id: str | None = None, target_id:
 
 def _snapshot_or_cached(*, force: bool = False, target_id: str | None = None) -> dict[str, Any]:
     managed_target_id = _managed_target_id_for_root_mcp(target_id)
-    cached = _CACHE.get("snapshot")
-    if not force and isinstance(cached, dict) and (time.time() - float(_CACHE.get("ts") or 0.0)) <= _CACHE_TTL_S:
-        return _with_last_issued(dict(cached))
+    cache_key = _snapshot_cache_key(managed_target_id)
+    cached = _CACHE.get(cache_key)
+    if not force and cached is not None:
+        cached_at, cached_snapshot = cached
+        if (time.time() - float(cached_at or 0.0)) <= _CACHE_TTL_S:
+            return _with_last_issued(dict(cached_snapshot))
     context: dict[str, Any] | None = None
     try:
         try:
@@ -613,9 +629,53 @@ def _snapshot_or_cached(*, force: bool = False, target_id: str | None = None) ->
     except Exception as exc:
         _log.warning("infra_access snapshot failed; projecting fallback snapshot", exc_info=True)
         snapshot = _fallback_snapshot(exc, target_id=managed_target_id, context=context)
-    _CACHE["ts"] = time.time()
-    _CACHE["snapshot"] = dict(snapshot)
+    _CACHE[cache_key] = (time.time(), dict(snapshot))
     return _with_last_issued(dict(snapshot))
+
+
+def _cleanup_runtime_state(*, reason: str = "lifecycle", wait: bool = False) -> dict[str, Any]:
+    global _PROJECTION_EXECUTOR
+    global _REFRESH_THREAD
+    with _REFRESH_LOCK:
+        thread = _REFRESH_THREAD
+        _REFRESH_THREAD = None
+    if wait and thread is not None and thread.is_alive():
+        thread.join(timeout=2.0)
+    cache_total = len(_CACHE)
+    issued_total = len(_LAST_ISSUED)
+    _CACHE.clear()
+    _LAST_ISSUED.clear()
+    with _PROJECTION_EXECUTOR_LOCK:
+        executor = _PROJECTION_EXECUTOR
+        _PROJECTION_EXECUTOR = None
+    if executor is not None:
+        executor.shutdown(wait=wait, cancel_futures=True)
+    _log.info(
+        "infra_access lifecycle cleanup reason=%s cache_total=%s issued_total=%s refresh_alive=%s executor=%s",
+        reason,
+        cache_total,
+        issued_total,
+        bool(thread is not None and thread.is_alive()),
+        bool(executor),
+    )
+    return {
+        "ok": True,
+        "reason": reason,
+        "cache_total": cache_total,
+        "issued_total": issued_total,
+        "refresh_thread_alive": bool(thread is not None and thread.is_alive()),
+        "executor_shutdown": bool(executor),
+    }
+
+
+@tool("infra_access_runtime_drain")
+def infra_access_runtime_drain(reason: str = "drain", **_: Any) -> dict[str, Any]:
+    return _cleanup_runtime_state(reason=reason or "drain", wait=False)
+
+
+@tool("infra_access_runtime_dispose")
+def infra_access_runtime_dispose(reason: str = "dispose", **_: Any) -> dict[str, Any]:
+    return _cleanup_runtime_state(reason=reason or "dispose", wait=False)
 
 
 @tool("get_snapshot")
