@@ -989,7 +989,12 @@ class NewFaceVisionEngine:
                 device_count = 0
                 device_name = ""
         mode = "GPU" if cuda_available else "CPU"
-        description = device_name if device_name else ("CUDA unavailable" if deps_ok else "torch unavailable")
+        if device_name:
+            description = device_name
+        elif torch_version:
+            description = f"torch {torch_version}, CUDA unavailable"
+        else:
+            description = "torch unavailable" if not deps_ok else "CUDA unavailable"
         return {
             "mode": mode,
             "device": self._device,
