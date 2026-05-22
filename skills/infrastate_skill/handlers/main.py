@@ -149,6 +149,9 @@ _registry_catalog_meta_cache: dict[tuple[str, str], tuple[float, dict[str, str]]
 _snapshot_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _snapshot_cache_guard = threading.Lock()
 _snapshot_cache_locks: dict[str, threading.Lock] = {}
+_snapshot_cache_invalidated_at: dict[str, float] = {}
+_snapshot_cache_versions: dict[str, int] = {}
+_snapshot_cache_entry_versions: dict[str, int] = {}
 _snapshot_cache_projection_fingerprints: dict[str, str] = {}
 _projection_fingerprints: dict[str, str] = {}
 _projection_last_applied_at: dict[str, float] = {}
@@ -946,11 +949,41 @@ def _snapshot_cache_lock_for(cache_key: str) -> threading.Lock:
         return lock
 
 
+def _mark_snapshot_cache_invalidated(cache_key: str) -> None:
+    with _snapshot_cache_guard:
+        _snapshot_cache_invalidated_at[cache_key] = time.monotonic()
+        _snapshot_cache_versions[cache_key] = int(_snapshot_cache_versions.get(cache_key) or 0) + 1
+
+
+def _snapshot_cache_version(cache_key: str) -> int:
+    with _snapshot_cache_guard:
+        return int(_snapshot_cache_versions.get(cache_key) or 0)
+
+
+def _snapshot_cache_invalidated_after(cache_key: str, timestamp: float) -> bool:
+    with _snapshot_cache_guard:
+        invalidated_at = float(_snapshot_cache_invalidated_at.get(cache_key) or 0.0)
+    return invalidated_at >= float(timestamp or 0.0)
+
+
+def _snapshot_cache_entry_is_current(cache_key: str) -> bool:
+    with _snapshot_cache_guard:
+        current_version = int(_snapshot_cache_versions.get(cache_key) or 0)
+        entry_version = int(_snapshot_cache_entry_versions.get(cache_key) or 0)
+    return entry_version == current_version
+
+
 def _invalidate_runtime_caches(*, webspace_id: str | None = None, marketplace: bool = False) -> None:
     cache_key = _snapshot_cache_key(webspace_id)
-    with _snapshot_cache_lock_for(cache_key):
-        _snapshot_cache.pop(cache_key, None)
-        _snapshot_cache_projection_fingerprints.pop(cache_key, None)
+    _mark_snapshot_cache_invalidated(cache_key)
+    cache_lock = _snapshot_cache_lock_for(cache_key)
+    if cache_lock.acquire(blocking=False):
+        try:
+            _snapshot_cache.pop(cache_key, None)
+            _snapshot_cache_entry_versions.pop(cache_key, None)
+            _snapshot_cache_projection_fingerprints.pop(cache_key, None)
+        finally:
+            cache_lock.release()
     if marketplace:
         _marketplace_catalog_cache.clear()
         _registry_catalog_cache.clear()
@@ -6548,26 +6581,40 @@ def _snapshot_or_fallback_cached(*, webspace_id: str | None = None, allow_cache:
             cached = _snapshot_cache.get(cache_key)
             if cached is not None:
                 cached_at, cached_snapshot = cached
-                if now - cached_at <= cache_ttl_s:
+                if now - cached_at <= cache_ttl_s and _snapshot_cache_entry_is_current(cache_key):
                     _projection_diag["cache_hit_total"] = int(_projection_diag.get("cache_hit_total") or 0) + 1
                     # Cached snapshots are immutable after insertion in this module.
                     # Returning the cached object avoids repeatedly deep-copying the
                     # full diagnostic tree for bursty browser snapshot polls.
                     return cached_snapshot
+            build_version = _snapshot_cache_version(cache_key)
             snapshot = _snapshot_or_fallback(webspace_id=webspace_id)
             cached_snapshot = _cache_copy(snapshot)
-            _snapshot_cache[cache_key] = (time.monotonic(), cached_snapshot)
-            _snapshot_cache_projection_fingerprints[cache_key] = _snapshot_projection_fingerprint(
-                _projection_sections_from_snapshot(cached_snapshot)
-            )
+            fingerprint = _snapshot_projection_fingerprint(_projection_sections_from_snapshot(cached_snapshot))
+            with _snapshot_cache_guard:
+                if int(_snapshot_cache_versions.get(cache_key) or 0) != build_version:
+                    _snapshot_cache.pop(cache_key, None)
+                    _snapshot_cache_entry_versions.pop(cache_key, None)
+                    _snapshot_cache_projection_fingerprints.pop(cache_key, None)
+                    return snapshot
+                _snapshot_cache[cache_key] = (time.monotonic(), cached_snapshot)
+                _snapshot_cache_entry_versions[cache_key] = build_version
+                _snapshot_cache_projection_fingerprints[cache_key] = fingerprint
             return snapshot
+    build_version = _snapshot_cache_version(cache_key)
     snapshot = _snapshot_or_fallback(webspace_id=webspace_id)
     with _snapshot_cache_lock_for(cache_key):
         cached_snapshot = _cache_copy(snapshot)
-        _snapshot_cache[cache_key] = (time.monotonic(), cached_snapshot)
-        _snapshot_cache_projection_fingerprints[cache_key] = _snapshot_projection_fingerprint(
-            _projection_sections_from_snapshot(cached_snapshot)
-        )
+        fingerprint = _snapshot_projection_fingerprint(_projection_sections_from_snapshot(cached_snapshot))
+        with _snapshot_cache_guard:
+            if int(_snapshot_cache_versions.get(cache_key) or 0) != build_version:
+                _snapshot_cache.pop(cache_key, None)
+                _snapshot_cache_entry_versions.pop(cache_key, None)
+                _snapshot_cache_projection_fingerprints.pop(cache_key, None)
+                return snapshot
+            _snapshot_cache[cache_key] = (time.monotonic(), cached_snapshot)
+            _snapshot_cache_entry_versions[cache_key] = build_version
+            _snapshot_cache_projection_fingerprints[cache_key] = fingerprint
     return snapshot
 
 
