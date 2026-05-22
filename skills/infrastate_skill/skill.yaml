@@ -1,5 +1,5 @@
 name: infrastate_skill
-version: 0.75.18
+version: 0.75.19
 description: Локальный обзор состояния ядра, graceful update, A/B слотов и последнего
   результата обновления.
 runtime:
@@ -21,6 +21,8 @@ events:
   - desktop.webspace.refresh
   - desktop.webspace.reload
   - sys.ready
+  - webio.stream.snapshot.requested
+  - webio.stream.subscription.changed
   - subnet.nats.up
   - subnet.nats.down
   - subnet.nats.reconnect
@@ -559,5 +561,5 @@ tools:
   output_schema:
     type: object
     properties: {}
-updated_at: '2026-05-22T06:42:01+00:00'
+updated_at: '2026-05-22T09:37:17+00:00'
 

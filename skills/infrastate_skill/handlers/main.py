@@ -50,7 +50,8 @@ from adaos.services.scenario.manager import ScenarioManager
 from adaos.services.workspace_registry import build_registry_entry, list_workspace_registry_entries, rebuild_workspace_registry
 from adaos.services.workspace_sync import effective_registry_names, installed_names, reconcile_workspace_db_to_materialized, sync_workspace_sparse_to_registry
 from adaos.services.yjs.webspace import default_webspace_id
-from adaos.services.yjs.load_mark import yjs_primary_doc_policy_snapshot
+from adaos.services.yjs.load_mark import yjs_load_mark_snapshot, yjs_primary_doc_policy_snapshot
+from adaos.services.yjs.load_mark_history import list_history_rows as list_yjs_load_mark_history_rows
 from adaos.services.skill.manager import SkillManager
 from adaos.adapters.db import SqliteScenarioRegistry, SqliteSkillRegistry
 from adaos.services.node_display import node_display_from_config
@@ -178,6 +179,7 @@ _projection_diag = {
     "tool_project_admitted_under_pressure_total": 0,
 }
 _PROJECTION_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="infrastate-projection")
+_STREAM_SNAPSHOT_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="infrastate-stream-snapshot")
 
 
 def _stream_min_interval_s() -> float:
@@ -754,6 +756,91 @@ def _detail_payload_for_receiver(snapshot: dict[str, Any], receiver: str) -> Any
     }
 
 
+def _yjs_load_mark_rows_from_selected(selected: Any) -> list[dict[str, Any]]:
+    if not isinstance(selected, dict):
+        return []
+    rows: list[dict[str, Any]] = []
+    for item in list(selected.get("owner_items") or []):
+        if not isinstance(item, dict):
+            continue
+        owner = str(item.get("owner") or item.get("id") or item.get("bucket_id") or "").strip()
+        row = dict(item)
+        row["kind"] = "owner"
+        row["id"] = owner or "unknown"
+        row["display"] = str(row.get("display") or owner or "unknown")
+        rows.append(row)
+    for item in list(selected.get("items") or []):
+        if not isinstance(item, dict):
+            continue
+        root = str(item.get("root") or item.get("id") or item.get("bucket_id") or "").strip()
+        row = dict(item)
+        row["kind"] = "root"
+        row["id"] = root or "unknown"
+        row["display"] = str(row.get("display") or root or "unknown")
+        rows.append(row)
+    rows.sort(
+        key=lambda entry: (
+            0 if str(entry.get("kind") or "") == "owner" else 1,
+            -float(entry.get("peak_bps") or 0.0),
+            -float(entry.get("peak_wps") or 0.0),
+            -float(entry.get("avg_bps") or 0.0),
+            str(entry.get("display") or ""),
+        )
+    )
+    return rows
+
+
+def _yjs_load_mark_rows_from_load_mark(load_mark: Any) -> list[dict[str, Any]]:
+    if not isinstance(load_mark, dict):
+        return []
+    selected = load_mark.get("selected_webspace") if isinstance(load_mark.get("selected_webspace"), dict) else {}
+    return _yjs_load_mark_rows_from_selected(selected)
+
+
+def _yjs_load_mark_history_rows(webspace_id: str | None) -> list[dict[str, Any]]:
+    try:
+        payload = list_yjs_load_mark_history_rows(
+            limit=64,
+            webspace_id=str(webspace_id or "").strip() or default_webspace_id(),
+        )
+    except Exception:
+        _log.debug("failed to read Yjs load mark history", exc_info=True)
+        return []
+    latest_by_bucket: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in list((payload or {}).get("items") or []):
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("kind") or "").strip() or "unknown"
+        bucket_id = str(item.get("bucket_id") or item.get("id") or item.get("display") or "").strip() or "unknown"
+        key = (kind, bucket_id)
+        if key in latest_by_bucket:
+            continue
+        row = dict(item)
+        row["kind"] = kind
+        row["id"] = bucket_id
+        row["display"] = str(row.get("display") or bucket_id)
+        if kind == "owner":
+            row.setdefault("owner", bucket_id)
+        elif kind == "root":
+            row.setdefault("root", bucket_id)
+        latest_by_bucket[key] = row
+    return list(latest_by_bucket.values())
+
+
+def _direct_yjs_load_mark_rows(webspace_id: str | None) -> list[dict[str, Any]]:
+    try:
+        load_mark = yjs_load_mark_snapshot(
+            webspace_id=str(webspace_id or "").strip() or default_webspace_id(),
+        )
+    except Exception:
+        _log.debug("failed to build direct Yjs load mark snapshot", exc_info=True)
+        load_mark = {}
+    rows = _yjs_load_mark_rows_from_load_mark(load_mark)
+    if rows:
+        return rows
+    return _yjs_load_mark_history_rows(webspace_id)
+
+
 def _stream_payload_for_receiver(snapshot: dict[str, Any], receiver: str) -> Any:
     token = str(receiver or "").strip()
     detail_payload = _detail_payload_for_receiver(snapshot, token)
@@ -773,36 +860,7 @@ def _stream_payload_for_receiver(snapshot: dict[str, Any], receiver: str) -> Any
             runtime = reliability.get("runtime") if isinstance(reliability.get("runtime"), dict) else {}
             yjs_runtime = runtime.get("sync_runtime") if isinstance(runtime.get("sync_runtime"), dict) else {}
         load_mark = yjs_runtime.get("load_mark") if isinstance(yjs_runtime.get("load_mark"), dict) else {}
-        selected = load_mark.get("selected_webspace") if isinstance(load_mark.get("selected_webspace"), dict) else {}
-        rows: list[dict[str, Any]] = []
-        for item in list(selected.get("owner_items") or []):
-            if not isinstance(item, dict):
-                continue
-            owner = str(item.get("owner") or "").strip()
-            row = dict(item)
-            row["kind"] = "owner"
-            row["id"] = owner or "unknown"
-            row["display"] = owner or "unknown"
-            rows.append(row)
-        for item in list(selected.get("items") or []):
-            if not isinstance(item, dict):
-                continue
-            root = str(item.get("root") or "").strip()
-            row = dict(item)
-            row["kind"] = "root"
-            row["id"] = root or "unknown"
-            row["display"] = root or "unknown"
-            rows.append(row)
-        rows.sort(
-            key=lambda entry: (
-                0 if str(entry.get("kind") or "") == "owner" else 1,
-                -float(entry.get("peak_bps") or 0.0),
-                -float(entry.get("peak_wps") or 0.0),
-                -float(entry.get("avg_bps") or 0.0),
-                str(entry.get("display") or ""),
-            )
-        )
-        return rows
+        return _yjs_load_mark_rows_from_load_mark(load_mark)
     if token == _build_receiver():
         return _compact_card_list(snapshot.get("build"), include_content=False)
     if token == _steps_receiver():
@@ -897,6 +955,35 @@ def _publish_stream_payload(*, receiver: str, data: Any, webspace_id: str | None
     )
 
 
+def _publish_registered_stream_receiver_snapshot(
+    receiver: str,
+    webspace_id: str | None,
+    *,
+    reason: str,
+) -> None:
+    _STREAM_RUNTIME.publish_receiver_snapshot(
+        receiver,
+        webspace_id=webspace_id,
+        force=True,
+        context=ProjectionContext(
+            skill_id="infrastate_skill",
+            webspace_id=str(webspace_id or "").strip() or default_webspace_id(),
+            receiver=receiver,
+            reason=reason,
+        ),
+    )
+
+
+def _schedule_stream_receiver_snapshot(receiver: str, webspace_id: str | None, *, reason: str) -> None:
+    def _publish() -> None:
+        try:
+            _publish_registered_stream_receiver_snapshot(receiver, webspace_id, reason=reason)
+        except Exception:
+            _log.debug("infrastate scheduled stream snapshot failed receiver=%s", receiver, exc_info=True)
+
+    _STREAM_SNAPSHOT_EXECUTOR.submit(_publish)
+
+
 def _publish_snapshot_streams(snapshot: dict[str, Any], *, webspace_id: str | None) -> None:
     eager_receivers = (
         _operations_receiver(),
@@ -936,8 +1023,12 @@ def _publish_snapshot_streams(snapshot: dict[str, Any], *, webspace_id: str | No
         )
 
 
-def _snapshot_cache_key(webspace_id: str | None = None) -> str:
-    return str(webspace_id or "").strip() or default_webspace_id()
+def _snapshot_cache_key(webspace_id: str | None = None, selected_node_id: str | None = None) -> str:
+    key = str(webspace_id or "").strip() or default_webspace_id()
+    node_key = str(selected_node_id or "").strip()
+    if node_key:
+        return f"{key}::node:{node_key}"
+    return key
 
 
 def _snapshot_cache_lock_for(cache_key: str) -> threading.Lock:
@@ -975,15 +1066,30 @@ def _snapshot_cache_entry_is_current(cache_key: str) -> bool:
 
 def _invalidate_runtime_caches(*, webspace_id: str | None = None, marketplace: bool = False) -> None:
     cache_key = _snapshot_cache_key(webspace_id)
-    _mark_snapshot_cache_invalidated(cache_key)
-    cache_lock = _snapshot_cache_lock_for(cache_key)
-    if cache_lock.acquire(blocking=False):
-        try:
-            _snapshot_cache.pop(cache_key, None)
-            _snapshot_cache_entry_versions.pop(cache_key, None)
-            _snapshot_cache_projection_fingerprints.pop(cache_key, None)
-        finally:
-            cache_lock.release()
+    with _snapshot_cache_guard:
+        cache_keys = {
+            cache_key,
+            *[
+                key
+                for key in (
+                    set(_snapshot_cache)
+                    | set(_snapshot_cache_entry_versions)
+                    | set(_snapshot_cache_projection_fingerprints)
+                    | set(_snapshot_cache_versions)
+                )
+                if str(key).startswith(f"{cache_key}::node:")
+            ],
+        }
+    for key in cache_keys:
+        _mark_snapshot_cache_invalidated(key)
+        cache_lock = _snapshot_cache_lock_for(key)
+        if cache_lock.acquire(blocking=False):
+            try:
+                _snapshot_cache.pop(key, None)
+                _snapshot_cache_entry_versions.pop(key, None)
+                _snapshot_cache_projection_fingerprints.pop(key, None)
+            finally:
+                cache_lock.release()
     if marketplace:
         _marketplace_catalog_cache.clear()
         _registry_catalog_cache.clear()
@@ -6393,7 +6499,7 @@ def _perform_action(action_id: str, conf, payload: Any | None = None) -> dict[st
     return result
 
 
-def _snapshot(webspace_id: str | None = None) -> dict[str, Any]:
+def _snapshot(webspace_id: str | None = None, selected_node_id: str | None = None) -> dict[str, Any]:
     _ensure_skill_data_projections()
     conf = load_config()
     status = _safe_snapshot_step("read_core_update_status", read_core_update_status, {}) or {}
@@ -6407,6 +6513,10 @@ def _snapshot(webspace_id: str | None = None) -> dict[str, Any]:
         (slots_payload, build),
     )
     ui_state = _safe_snapshot_step("ui_state", _ui_state, {}) or {}
+    selected_node_override = str(selected_node_id or "").strip()
+    if selected_node_override:
+        ui_state = dict(ui_state)
+        ui_state["selected_node_id"] = selected_node_override
     reliability = _safe_snapshot_step(
         "reliability_snapshot",
         lambda: _reliability_snapshot(conf, lifecycle),
@@ -6668,16 +6778,23 @@ def _safe_snapshot_step(label: str, fn, default: Any) -> Any:
         return default
 
 
-def _snapshot_or_fallback(*, webspace_id: str | None = None) -> dict[str, Any]:
+def _snapshot_or_fallback(*, webspace_id: str | None = None, selected_node_id: str | None = None) -> dict[str, Any]:
     try:
+        if str(selected_node_id or "").strip():
+            return _snapshot(webspace_id=webspace_id, selected_node_id=selected_node_id)
         return _snapshot(webspace_id=webspace_id)
     except Exception as exc:
         _log.warning("infrastate snapshot failed; projecting fallback snapshot", exc_info=True)
         return _fallback_snapshot(exc, webspace_id=webspace_id)
 
 
-def _snapshot_or_fallback_cached(*, webspace_id: str | None = None, allow_cache: bool = True) -> dict[str, Any]:
-    cache_key = _snapshot_cache_key(webspace_id)
+def _snapshot_or_fallback_cached(
+    *,
+    webspace_id: str | None = None,
+    allow_cache: bool = True,
+    selected_node_id: str | None = None,
+) -> dict[str, Any]:
+    cache_key = _snapshot_cache_key(webspace_id, selected_node_id=selected_node_id)
     cache_ttl_s = _snapshot_cache_ttl_for_pressure(webspace_id)
     if allow_cache and cache_ttl_s > 0:
         # Coalesce concurrent initial stream subscriptions for the same
@@ -6694,7 +6811,10 @@ def _snapshot_or_fallback_cached(*, webspace_id: str | None = None, allow_cache:
                     # full diagnostic tree for bursty browser snapshot polls.
                     return cached_snapshot
             build_version = _snapshot_cache_version(cache_key)
-            snapshot = _snapshot_or_fallback(webspace_id=webspace_id)
+            if str(selected_node_id or "").strip():
+                snapshot = _snapshot_or_fallback(webspace_id=webspace_id, selected_node_id=selected_node_id)
+            else:
+                snapshot = _snapshot_or_fallback(webspace_id=webspace_id)
             cached_snapshot = _cache_copy(snapshot)
             fingerprint = _snapshot_projection_fingerprint(_projection_sections_from_snapshot(cached_snapshot))
             with _snapshot_cache_guard:
@@ -6708,7 +6828,10 @@ def _snapshot_or_fallback_cached(*, webspace_id: str | None = None, allow_cache:
                 _snapshot_cache_projection_fingerprints[cache_key] = fingerprint
             return snapshot
     build_version = _snapshot_cache_version(cache_key)
-    snapshot = _snapshot_or_fallback(webspace_id=webspace_id)
+    if str(selected_node_id or "").strip():
+        snapshot = _snapshot_or_fallback(webspace_id=webspace_id, selected_node_id=selected_node_id)
+    else:
+        snapshot = _snapshot_or_fallback(webspace_id=webspace_id)
     with _snapshot_cache_lock_for(cache_key):
         cached_snapshot = _cache_copy(snapshot)
         fingerprint = _snapshot_projection_fingerprint(_projection_sections_from_snapshot(cached_snapshot))
@@ -6743,6 +6866,10 @@ def _build_stream_payload_for_receiver(receiver: str, webspace_id: str | None = 
         return list(operations.get("active_items") or operations.get("items") or [])
     if token == _events_receiver():
         return _compact_card_list(list(reversed(_event_state())), include_content=False)
+    if token == _yjs_load_receiver():
+        rows = _direct_yjs_load_mark_rows(webspace_id)
+        if rows:
+            return rows
     if token == _skills_receiver():
         return _filter_inventory_drift(
             _inventory_items_from(_skills_items),
@@ -6912,17 +7039,7 @@ def on_webio_stream_snapshot_requested(evt: Any) -> None:
             force=True,
         )
     else:
-        _STREAM_RUNTIME.publish_receiver_snapshot(
-            receiver,
-            webspace_id=webspace_id,
-            force=True,
-            context=ProjectionContext(
-                skill_id="infrastate_skill",
-                webspace_id=str(webspace_id or "").strip() or default_webspace_id(),
-                receiver=receiver,
-                reason="snapshot_requested",
-            ),
-        )
+        _schedule_stream_receiver_snapshot(receiver, webspace_id, reason="snapshot_requested")
     if is_detail_receiver:
         _forget_stream_receiver(webspace_id, receiver)
 
@@ -6944,6 +7061,7 @@ def on_webio_stream_subscription_changed(evt: Any) -> None:
         _forget_stream_receiver(webspace_id, receiver)
     else:
         _remember_stream_receiver(webspace_id, receiver)
+        _schedule_stream_receiver_snapshot(receiver, webspace_id, reason="subscription_changed")
 
 
 @tool("get_snapshot")
@@ -6954,8 +7072,20 @@ def get_snapshot(
     target_node_id: str | None = None,
     **_: Any,
 ) -> dict[str, Any]:
-    snapshot = _snapshot_or_fallback_cached(webspace_id=webspace_id, allow_cache=True)
+    requested_node_id = str(target_node_id or node_id or "").strip()
+    snapshot = _snapshot_or_fallback_cached(
+        webspace_id=webspace_id,
+        allow_cache=True,
+        selected_node_id=requested_node_id or None,
+    )
     projection_required = bool(project)
+    try:
+        local_node_id = str(getattr(load_config(), "node_id", "") or "").strip()
+    except Exception:
+        local_node_id = ""
+    remote_target_requested = bool(requested_node_id and requested_node_id != local_node_id)
+    if remote_target_requested:
+        projection_required = False
     if projection_required and _snapshot_projection_is_current(webspace_id, snapshot):
         projection_required = False
         _projection_diag["tool_project_current_skip_total"] = int(_projection_diag.get("tool_project_current_skip_total") or 0) + 1
