@@ -170,6 +170,62 @@
               }
             },
             {
+              "id": "bad-ratio-stream",
+              "type": "visual.timeseriesChart",
+              "area": "main",
+              "title": "Bad ratio",
+              "dataSource": {
+                "kind": "stream",
+                "receiver": "newface_vision_metrics"
+              },
+              "inputs": {
+                "xKey": "seq",
+                "yKey": "series.pred_ratio",
+                "emptyText": "No metric points",
+                "showValues": false,
+                "showTable": false,
+                "layoutGroup": "newface-charts",
+                "detailsModalId": "newface_metrics_modal"
+              },
+              "actions": [
+                {
+                  "on": "click",
+                  "type": "openModal",
+                  "params": {
+                    "modalId": "newface_metrics_modal"
+                  }
+                }
+              ]
+            },
+            {
+              "id": "metrics-stream",
+              "type": "visual.timeseriesChart",
+              "area": "main",
+              "title": "Dice",
+              "dataSource": {
+                "kind": "stream",
+                "receiver": "newface_vision_metrics"
+              },
+              "inputs": {
+                "xKey": "seq",
+                "yKey": "series.dice",
+                "emptyText": "No metric points",
+                "showValues": false,
+                "showTable": false,
+                "layoutGroup": "newface-charts",
+                "detailsModalId": "newface_metrics_modal"
+              },
+              "actions": [
+                {
+                  "on": "click",
+                  "type": "openModal",
+                  "params": {
+                    "modalId": "newface_metrics_modal"
+                  }
+                }
+              ]
+            },
+            {
               "id": "controls",
               "type": "input.commandBar",
               "area": "main",
@@ -326,6 +382,21 @@
               }
             },
             {
+              "id": "compute-state",
+              "type": "visual.metricTile",
+              "area": "right",
+              "title": "Compute",
+              "dataSource": {
+                "kind": "y",
+                "path": "data/new_face_vision/current/compute"
+              },
+              "inputs": {
+                "valuePath": "mode",
+                "descriptionPath": "description",
+                "emptyText": "CPU"
+              }
+            },
+            {
               "id": "masks-state",
               "type": "visual.metricTile",
               "area": "right",
@@ -353,36 +424,6 @@
                 "valuePath": "avg_dice",
                 "emptyText": "--",
                 "descriptionPath": "avg_iou"
-              }
-            },
-            {
-              "id": "bad-ratio-stream",
-              "type": "visual.timeseriesChart",
-              "area": "bottom",
-              "title": "Bad ratio",
-              "dataSource": {
-                "kind": "stream",
-                "receiver": "newface_vision_metrics"
-              },
-              "inputs": {
-                "xKey": "seq",
-                "yKey": "series.pred_ratio",
-                "emptyText": "No metric points"
-              }
-            },
-            {
-              "id": "metrics-stream",
-              "type": "visual.timeseriesChart",
-              "area": "bottom",
-              "title": "Dice",
-              "dataSource": {
-                "kind": "stream",
-                "receiver": "newface_vision_metrics"
-              },
-              "inputs": {
-                "xKey": "seq",
-                "yKey": "series.dice",
-                "emptyText": "No metric points"
               }
             }
           ]
@@ -521,6 +562,74 @@
               }
             ]
           }
+        },
+        "newface_metrics_modal": {
+          "title": "Frame metrics",
+          "presentation": {
+            "kind": "modal"
+          },
+          "schema": {
+            "id": "newface_metrics_modal",
+            "layout": {
+              "type": "single",
+              "pattern": "stack",
+              "areas": [
+                {
+                  "id": "main",
+                  "role": "main"
+                }
+              ]
+            },
+            "widgets": [
+              {
+                "id": "metrics-table",
+                "type": "ui.table",
+                "area": "main",
+                "title": "Metrics",
+                "dataSource": {
+                  "kind": "y",
+                  "path": "data/new_face_vision/history"
+                },
+                "inputs": {
+                  "emptyText": "No results yet",
+                  "columns": [
+                    {
+                      "key": "frame_label",
+                      "label": "Frame"
+                    },
+                    {
+                      "key": "frame_key",
+                      "label": "Key"
+                    },
+                    {
+                      "key": "pred_ratio",
+                      "label": "Pred"
+                    },
+                    {
+                      "key": "true_ratio",
+                      "label": "True"
+                    },
+                    {
+                      "key": "dice",
+                      "label": "Dice"
+                    },
+                    {
+                      "key": "iou",
+                      "label": "IoU"
+                    },
+                    {
+                      "key": "status",
+                      "label": "Status"
+                    },
+                    {
+                      "key": "cached",
+                      "label": "Cached"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
         }
       }
     }
@@ -528,7 +637,8 @@
   "registry": {
     "widgets": [],
     "modals": [
-      "newface_upload_modal"
+      "newface_upload_modal",
+      "newface_metrics_modal"
     ]
   },
   "catalog": {
