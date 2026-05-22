@@ -178,8 +178,29 @@ _projection_diag = {
     "snapshot_request_coalesced_total": 0,
     "tool_project_admitted_under_pressure_total": 0,
 }
-_PROJECTION_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="infrastate-projection")
-_STREAM_SNAPSHOT_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="infrastate-stream-snapshot")
+_PROJECTION_EXECUTOR: ThreadPoolExecutor | None = None
+_STREAM_SNAPSHOT_EXECUTOR: ThreadPoolExecutor | None = None
+_PROJECTION_EXECUTOR_LOCK = threading.Lock()
+_STREAM_SNAPSHOT_EXECUTOR_LOCK = threading.Lock()
+
+
+def _projection_executor() -> ThreadPoolExecutor:
+    global _PROJECTION_EXECUTOR
+    with _PROJECTION_EXECUTOR_LOCK:
+        if _PROJECTION_EXECUTOR is None:
+            _PROJECTION_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="infrastate-projection")
+        return _PROJECTION_EXECUTOR
+
+
+def _stream_snapshot_executor() -> ThreadPoolExecutor:
+    global _STREAM_SNAPSHOT_EXECUTOR
+    with _STREAM_SNAPSHOT_EXECUTOR_LOCK:
+        if _STREAM_SNAPSHOT_EXECUTOR is None:
+            _STREAM_SNAPSHOT_EXECUTOR = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="infrastate-stream-snapshot",
+            )
+        return _STREAM_SNAPSHOT_EXECUTOR
 
 
 def _stream_min_interval_s() -> float:
@@ -398,7 +419,8 @@ def _invalidate_after_action(action_id: str, *, webspace_id: str | None) -> None
 def _schedule_action_inventory_streams(action_id: str, *, webspace_id: str | None) -> None:
     reason = f"infrastate.action:{str(action_id or '-').strip() or '-'}"
     for receiver in _action_inventory_receivers(action_id):
-        _schedule_stream_receiver_snapshot(receiver, webspace_id, reason=reason)
+        if _stream_receiver_is_active(webspace_id, receiver):
+            _schedule_stream_receiver_snapshot(receiver, webspace_id, reason=reason)
 
 
 def _sdk_stream_publish(
@@ -976,6 +998,11 @@ def _active_stream_receivers(webspace_id: str | None) -> list[str]:
     return sorted(local_receivers | sdk_receivers)
 
 
+def _stream_receiver_is_active(webspace_id: str | None, receiver: str) -> bool:
+    token = str(receiver or "").strip()
+    return bool(token and token in set(_active_stream_receivers(webspace_id)))
+
+
 def _stream_payload_fingerprint(data: Any) -> str:
     return hashlib.sha1(_stable_json_bytes(_sanitize_snapshot_for_fingerprint(data))).hexdigest()
 
@@ -1030,28 +1057,20 @@ def _schedule_stream_receiver_snapshot(receiver: str, webspace_id: str | None, *
         except Exception:
             _log.debug("infrastate scheduled stream snapshot failed receiver=%s", receiver, exc_info=True)
 
-    _STREAM_SNAPSHOT_EXECUTOR.submit(_publish)
+    _stream_snapshot_executor().submit(_publish)
 
 
 def _publish_snapshot_streams(snapshot: dict[str, Any], *, webspace_id: str | None) -> None:
-    eager_receivers = (
-        _operations_receiver(),
-    )
-    all_receivers = eager_receivers + (
-        _build_receiver(),
-        _steps_receiver(),
-        _realtime_receiver(),
-        _slots_receiver(),
-        _skills_receiver(),
-        _scenarios_receiver(),
-        _marketplace_skills_receiver(),
-        _marketplace_scenarios_receiver(),
-        _core_update_diagnostics_receiver(),
-    )
     if _eager_stream_publish_enabled():
-        receivers = all_receivers
-    else:
-        receivers = tuple(dict.fromkeys(eager_receivers + tuple(_active_stream_receivers(webspace_id))))
+        total = int(_projection_diag.get("eager_stream_publish_suppressed_total") or 0) + 1
+        _projection_diag["eager_stream_publish_suppressed_total"] = total
+        if total == 1 or total % 50 == 0:
+            _log.warning(
+                "infrastate eager stream fanout ignored; publishing only active subscriptions webspace=%s total=%s",
+                str(webspace_id or "").strip() or default_webspace_id(),
+                total,
+            )
+    receivers = tuple(_active_stream_receivers(webspace_id))
     for receiver in receivers:
         guardrail = _active_noncritical_stream_guardrail(
             str(webspace_id or "").strip() or default_webspace_id(),
@@ -1165,6 +1184,113 @@ def _invalidate_projection_state(*, webspace_id: str | None = None) -> None:
     _stream_fingerprints.clear()
     _stream_last_published_at.clear()
     _stream_request_seen_at.clear()
+
+
+def _shutdown_executor_ref(
+    *,
+    name: str,
+    lock: threading.Lock,
+    wait: bool,
+) -> bool:
+    global _PROJECTION_EXECUTOR
+    global _STREAM_SNAPSHOT_EXECUTOR
+    with lock:
+        if name == "projection":
+            executor = _PROJECTION_EXECUTOR
+            _PROJECTION_EXECUTOR = None
+        else:
+            executor = _STREAM_SNAPSHOT_EXECUTOR
+            _STREAM_SNAPSHOT_EXECUTOR = None
+    if executor is None:
+        return False
+    executor.shutdown(wait=wait, cancel_futures=True)
+    return True
+
+
+def _cleanup_runtime_state(*, reason: str = "lifecycle", wait: bool = False) -> dict[str, Any]:
+    global _background_refresh_task
+    global _background_refresh_pending
+    global _background_refresh_reason
+    global _background_refresh_webspace_id
+    task_cancelled = False
+    task = _background_refresh_task
+    if task is not None and not task.done():
+        task.cancel()
+        task_cancelled = True
+    _background_refresh_task = None
+    _background_refresh_pending = False
+    _background_refresh_reason = ""
+    _background_refresh_webspace_id = None
+    with _snapshot_cache_guard:
+        snapshot_cache_total = len(_snapshot_cache)
+        snapshot_lock_total = len(_snapshot_cache_locks)
+        _snapshot_cache.clear()
+        _snapshot_cache_locks.clear()
+        _snapshot_cache_invalidated_at.clear()
+        _snapshot_cache_versions.clear()
+        _snapshot_cache_entry_versions.clear()
+        _snapshot_cache_projection_fingerprints.clear()
+    marketplace_cache_total = (
+        len(_marketplace_catalog_cache)
+        + len(_registry_catalog_cache)
+        + len(_registry_catalog_meta_cache)
+    )
+    _marketplace_catalog_cache.clear()
+    _registry_catalog_cache.clear()
+    _registry_catalog_meta_cache.clear()
+    receiver_total = sum(len(receivers) for receivers in _active_stream_receivers_by_webspace.values())
+    _active_stream_receivers_by_webspace.clear()
+    _stream_fingerprints.clear()
+    _stream_last_published_at.clear()
+    _stream_request_seen_at.clear()
+    _projection_fingerprints.clear()
+    _projection_last_applied_at.clear()
+    _snapshot_cache_projection_fingerprints.clear()
+    _PROJECTION_RUNTIME.reset()
+    _STREAM_RUNTIME.reset()
+    projection_executor_shutdown = _shutdown_executor_ref(
+        name="projection",
+        lock=_PROJECTION_EXECUTOR_LOCK,
+        wait=wait,
+    )
+    stream_executor_shutdown = _shutdown_executor_ref(
+        name="stream_snapshot",
+        lock=_STREAM_SNAPSHOT_EXECUTOR_LOCK,
+        wait=wait,
+    )
+    _log.info(
+        "infrastate lifecycle cleanup reason=%s task_cancelled=%s snapshot_cache=%s snapshot_locks=%s "
+        "marketplace_cache=%s active_receivers=%s projection_executor=%s stream_executor=%s",
+        reason,
+        task_cancelled,
+        snapshot_cache_total,
+        snapshot_lock_total,
+        marketplace_cache_total,
+        receiver_total,
+        projection_executor_shutdown,
+        stream_executor_shutdown,
+    )
+    return {
+        "ok": True,
+        "reason": reason,
+        "background_task_cancelled": task_cancelled,
+        "snapshot_cache_total": snapshot_cache_total,
+        "snapshot_lock_total": snapshot_lock_total,
+        "marketplace_cache_total": marketplace_cache_total,
+        "active_receiver_total": receiver_total,
+        "projection_executor_shutdown": projection_executor_shutdown,
+        "stream_executor_shutdown": stream_executor_shutdown,
+    }
+
+
+@tool("infrastate_runtime_drain")
+def infrastate_runtime_drain(reason: str = "drain", **_: Any) -> dict[str, Any]:
+    return _cleanup_runtime_state(reason=reason or "drain", wait=False)
+
+
+@tool("infrastate_runtime_dispose")
+def infrastate_runtime_dispose(reason: str = "dispose", **_: Any) -> dict[str, Any]:
+    return _cleanup_runtime_state(reason=reason or "dispose", wait=False)
 
 
 def _consume_stream_snapshot_request(*, webspace_id: str | None, receiver: str) -> bool:
@@ -7058,7 +7184,7 @@ def _project(snapshot: dict[str, Any], webspace_id: str | None = None) -> None:
     except RuntimeError:
         asyncio.run(_project_async(snapshot, webspace_id=webspace_id))
         return
-    _PROJECTION_EXECUTOR.submit(
+    _projection_executor().submit(
         lambda: asyncio.run(_project_async(snapshot, webspace_id=webspace_id))
     ).result()
 

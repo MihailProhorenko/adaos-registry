@@ -165,6 +165,9 @@
 				"title": "Infrastructure State",
 				"schema": {
 					"id": "infrastate_modal",
+          "initialState": {
+            "infrastateTab": "overview"
+          },
           "layout": {
             "type": "single",
             "pattern": "stack",
@@ -191,11 +194,36 @@
 								}
 							]
 						},
+            {
+              "id": "infrastate-tabs",
+              "type": "input.commandBar",
+              "area": "main",
+              "inputs": {
+                "size": "small",
+                "selectedStateKey": "infrastateTab",
+                "buttons": [
+                  { "id": "overview", "label": "Overview" },
+                  { "id": "update", "label": "Update" },
+                  { "id": "inventory", "label": "Inventory" },
+                  { "id": "diagnostics", "label": "Diagnostics" }
+                ]
+              },
+              "actions": [
+                {
+                  "on": "click",
+                  "type": "updateState",
+                  "params": {
+                    "infrastateTab": "$event.id"
+                  }
+                }
+              ]
+            },
 						{
 							"id": "infrastate-nodes",
 							"type": "input.commandBar",
 							"area": "main",
 							"title": "Nodes",
+              "visibleIf": "$state.infrastateTab === 'overview'",
 							"dataSource": {
 								"kind": "y",
 								"path": "data/infrastate/nodes"
@@ -220,6 +248,7 @@
 							"type": "input.text",
 							"area": "main",
 							"title": "Node names",
+              "visibleIf": "$state.infrastateTab === 'overview'",
 							"dataSource": {
 								"kind": "y",
 								"path": "data/infrastate/node_editor"
@@ -247,6 +276,7 @@
 							"type": "ui.actions",
 							"area": "main",
 							"title": "",
+              "visibleIf": "$state.infrastateTab === 'overview'",
 							"dataSource": {
 								"kind": "y",
 								"path": "data/infrastate/core_actions"
@@ -270,6 +300,7 @@
 							"type": "ui.list",
 							"area": "main",
 							"title": "Build",
+              "visibleIf": "$state.infrastateTab === 'update'",
 							"dataSource": {
 								"kind": "stream",
 								"receiver": "infrastate.build"
@@ -288,6 +319,7 @@
 							"type": "ui.list",
 							"area": "main",
 							"title": "Pipeline",
+              "visibleIf": "$state.infrastateTab === 'update'",
 							"dataSource": {
 								"kind": "stream",
 								"receiver": "infrastate.steps"
@@ -305,6 +337,7 @@
 							"type": "ui.list",
 							"area": "main",
 							"title": "Realtime channels",
+              "visibleIf": "$state.infrastateTab === 'update'",
 							"dataSource": {
 								"kind": "stream",
 								"receiver": "infrastate.realtime"
@@ -329,6 +362,7 @@
       "type": "ui.list",
       "area": "main",
       "title": "Core slots",
+      "visibleIf": "$state.infrastateTab === 'update'",
       "dataSource": {
         "kind": "stream",
         "receiver": "infrastate.slots"
@@ -347,6 +381,7 @@
       "type": "ui.actions",
       "area": "main",
       "title": "Update",
+      "visibleIf": "$state.infrastateTab === 'update'",
       "dataSource": {
         "kind": "y",
         "path": "data/infrastate/update_actions"
@@ -377,6 +412,7 @@
       "type": "ui.actions",
       "area": "main",
       "title": "",
+      "visibleIf": "$state.infrastateTab === 'update'",
       "dataSource": {
         "kind": "y",
         "path": "data/infrastate/core_update_diag_actions"
@@ -401,6 +437,7 @@
       "type": "ui.list",
       "area": "main",
       "title": "Core update diagnostics",
+      "visibleIf": "$state.infrastateTab === 'update'",
       "dataSource": {
         "kind": "stream",
         "receiver": "infrastate.core_update_diagnostics"
@@ -439,6 +476,7 @@
       "type": "ui.list",
       "area": "main",
       "title": "Active operations",
+      "visibleIf": "$state.infrastateTab === 'overview'",
       "dataSource": {
         "kind": "stream",
         "receiver": "infrastate.operations.active"
@@ -463,6 +501,7 @@
       "type": "ui.actions",
       "area": "main",
       "title": "",
+      "visibleIf": "$state.infrastateTab === 'diagnostics'",
       "inputs": {
         "variant": "stack",
         "size": "small",
@@ -488,6 +527,7 @@
 							"type": "ui.table",
 							"area": "main",
 							"title": "Installed skills",
+              "visibleIf": "$state.infrastateTab === 'inventory'",
 							"dataSource": {
 								"kind": "stream",
 								"receiver": "infrastate.skills"
@@ -579,6 +619,7 @@
 							"type": "ui.table",
 							"area": "main",
 							"title": "Installed scenarios",
+              "visibleIf": "$state.infrastateTab === 'inventory'",
 							"dataSource": {
 								"kind": "stream",
 								"receiver": "infrastate.scenarios"
@@ -623,6 +664,7 @@
 							"type": "ui.list",
 							"area": "main",
 							"title": "Last logs",
+              "visibleIf": "$state.infrastateTab === 'diagnostics'",
 							"dataSource": {
 								"kind": "stream",
 								"receiver": "infrastate.logs.recent"
@@ -647,6 +689,7 @@
 							"type": "ui.table",
 							"area": "main",
 							"title": "Yjs load mark",
+              "visibleIf": "$state.infrastateTab === 'diagnostics'",
 							"dataSource": {
 								"kind": "stream",
 								"receiver": "infrastate.yjs.load_mark"
