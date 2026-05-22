@@ -609,7 +609,7 @@ class NewFaceVisionEngine:
                 "loaded": self._model is not None or bool(self._model_path),
                 "materialized": self._model is not None,
                 "available": bool(self._model_path),
-                "path": self._model_path,
+                "name": (self._files.get("model") or {}).get("name") if isinstance(self._files.get("model"), Mapping) else "",
                 "device": self._device,
             },
             "stats": {
