@@ -1,5 +1,5 @@
 name: browsers_skill
-version: 0.15.8
+version: 0.15.9
 entry: handlers/main.py
 runtime:
   python: '3.11'
@@ -173,8 +173,32 @@ data_projections:
   targets:
   - backend: yjs
     path: data/browsers/current_name
+lifecycle:
+  drain: browsers_runtime_drain
+  dispose: browsers_runtime_dispose
 default_tool: refresh_snapshot
 tools:
+- name: browsers_runtime_drain
+  description: Stop pending browser projection refreshes and clear transient runtime
+    state.
+  entry: handlers.main:browsers_runtime_drain
+  input_schema:
+    type: object
+    properties:
+      reason:
+        type: string
+  output_schema:
+    type: object
+- name: browsers_runtime_dispose
+  description: Dispose browser projection workers and clear transient runtime state.
+  entry: handlers.main:browsers_runtime_dispose
+  input_schema:
+    type: object
+    properties:
+      reason:
+        type: string
+  output_schema:
+    type: object
 - name: refresh_snapshot
   description: Recompute compact browser inventory projections for one webspace.
   entry: handlers.main:refresh_snapshot
@@ -315,5 +339,5 @@ tools:
   output_schema:
     type: object
 exports: {}
-updated_at: '2026-05-20T17:44:15+00:00'
+updated_at: '2026-05-22T14:17:49+00:00'
 

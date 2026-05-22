@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Dict, Mapping
@@ -32,7 +33,8 @@ except Exception:  # pragma: no cover - workspace index is optional in tests/run
 
 _LOG = logging.getLogger("adaos.skill.browsers")
 _SELECTED_BROWSER_BY_WS: dict[str, str] = {}
-_PROJECTION_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="browsers-projection")
+_PROJECTION_EXECUTOR: ThreadPoolExecutor | None = None
+_PROJECTION_EXECUTOR_LOCK = threading.Lock()
 _PENDING_REFRESH_BY_WS: dict[str, Any] = {}
 REQUIRES_DATA_PROJECTIONS = [
     "browsers.summary",
@@ -99,6 +101,14 @@ _STREAM_RUNTIME = StreamRuntime(
     ],
     stream_publish=_sdk_stream_publish,
 )
+
+
+def _projection_executor() -> ThreadPoolExecutor:
+    global _PROJECTION_EXECUTOR
+    with _PROJECTION_EXECUTOR_LOCK:
+        if _PROJECTION_EXECUTOR is None:
+            _PROJECTION_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="browsers-projection")
+        return _PROJECTION_EXECUTOR
 
 
 def lang_res() -> Dict[str, str]:
@@ -206,7 +216,7 @@ def _run_coro(coro: Any, *, wait: bool = True, key: str | None = None) -> Any:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(coro)
-    future = _PROJECTION_EXECUTOR.submit(lambda: asyncio.run(coro))
+    future = _projection_executor().submit(lambda: asyncio.run(coro))
     if not wait:
         if key:
             _PENDING_REFRESH_BY_WS[key] = future
@@ -242,6 +252,54 @@ def _schedule_publish_snapshot(target_ws: str | None = None, *, fanout: bool = F
         except Exception:
             pass
     return _run_coro(_publish_snapshot(target_ws, fanout=fanout, force=force), wait=False, key=key)
+
+
+def _cleanup_runtime_state(*, reason: str = "lifecycle", wait: bool = False) -> dict[str, Any]:
+    global _PROJECTION_EXECUTOR
+    pending = list(_PENDING_REFRESH_BY_WS.values())
+    _PENDING_REFRESH_BY_WS.clear()
+    cancelled = 0
+    for future in pending:
+        try:
+            if future.cancel():
+                cancelled += 1
+        except Exception:
+            pass
+    _STREAM_RUNTIME.reset()
+    _PROJECTION_RUNTIME.reset()
+    selected_total = len(_SELECTED_BROWSER_BY_WS)
+    _SELECTED_BROWSER_BY_WS.clear()
+    with _PROJECTION_EXECUTOR_LOCK:
+        executor = _PROJECTION_EXECUTOR
+        _PROJECTION_EXECUTOR = None
+    if executor is not None:
+        executor.shutdown(wait=wait, cancel_futures=True)
+    _LOG.info(
+        "browsers lifecycle cleanup reason=%s pending=%s cancelled=%s selected_total=%s executor=%s",
+        reason,
+        len(pending),
+        cancelled,
+        selected_total,
+        bool(executor),
+    )
+    return {
+        "ok": True,
+        "reason": reason,
+        "pending_total": len(pending),
+        "cancelled_total": cancelled,
+        "selected_total": selected_total,
+        "executor_shutdown": bool(executor),
+    }
+
+
+@tool("browsers_runtime_drain")
+def browsers_runtime_drain(reason: str = "drain", **_: Any) -> dict[str, Any]:
+    return _cleanup_runtime_state(reason=reason or "drain", wait=False)
+
+
+@tool("browsers_runtime_dispose")
+def browsers_runtime_dispose(reason: str = "dispose", **_: Any) -> dict[str, Any]:
+    return _cleanup_runtime_state(reason=reason or "dispose", wait=False)
 
 
 def _ensure_skill_data_projections() -> None:
