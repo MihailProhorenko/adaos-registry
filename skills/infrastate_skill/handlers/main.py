@@ -352,6 +352,55 @@ def _details_receiver_prefix() -> str:
     return "infrastate.details."
 
 
+def _action_invalidates_marketplace(action_id: str) -> bool:
+    return str(action_id or "").strip() in {
+        "adaos_update",
+        "marketplace",
+        "marketplace_install",
+        "scenario_uninstall",
+        "skill_activate",
+        "skill_hard_pull",
+        "skill_push",
+        "skill_uninstall",
+        "skill_update",
+    }
+
+
+def _action_inventory_receivers(action_id: str) -> tuple[str, ...]:
+    token = str(action_id or "").strip()
+    if token in {
+        "skill_activate",
+        "skill_hard_pull",
+        "skill_push",
+        "skill_uninstall",
+        "skill_update",
+    }:
+        return (_skills_receiver(), _marketplace_skills_receiver())
+    if token == "scenario_uninstall":
+        return (_scenarios_receiver(), _marketplace_scenarios_receiver())
+    if token in {"adaos_update", "marketplace", "marketplace_install"}:
+        return (
+            _skills_receiver(),
+            _scenarios_receiver(),
+            _marketplace_skills_receiver(),
+            _marketplace_scenarios_receiver(),
+        )
+    return ()
+
+
+def _invalidate_after_action(action_id: str, *, webspace_id: str | None) -> None:
+    _invalidate_runtime_caches(
+        webspace_id=webspace_id,
+        marketplace=_action_invalidates_marketplace(action_id),
+    )
+
+
+def _schedule_action_inventory_streams(action_id: str, *, webspace_id: str | None) -> None:
+    reason = f"infrastate.action:{str(action_id or '-').strip() or '-'}"
+    for receiver in _action_inventory_receivers(action_id):
+        _schedule_stream_receiver_snapshot(receiver, webspace_id, reason=reason)
+
+
 def _sdk_stream_publish(
     receiver: str,
     data: Any,
@@ -1093,6 +1142,7 @@ def _invalidate_runtime_caches(*, webspace_id: str | None = None, marketplace: b
     if marketplace:
         _marketplace_catalog_cache.clear()
         _registry_catalog_cache.clear()
+        _registry_catalog_meta_cache.clear()
 
 
 def _invalidate_projection_state(*, webspace_id: str | None = None) -> None:
@@ -7108,12 +7158,14 @@ def get_snapshot(
     project: bool = False,
     node_id: str | None = None,
     target_node_id: str | None = None,
+    force_refresh: bool = False,
+    allow_cache: bool = True,
     **_: Any,
 ) -> dict[str, Any]:
     requested_node_id = str(target_node_id or node_id or "").strip()
     snapshot = _snapshot_or_fallback_cached(
         webspace_id=webspace_id,
-        allow_cache=True,
+        allow_cache=bool(allow_cache) and not bool(force_refresh),
         selected_node_id=requested_node_id or None,
     )
     projection_required = bool(project)
@@ -7171,10 +7223,15 @@ def on_action(evt: Any) -> None:
     webspace_id = _webspace_id_from_payload(payload)
     try:
         if action_id:
+            _invalidate_after_action(action_id, webspace_id=webspace_id)
             _perform_action(action_id, conf, payload)
     except Exception as exc:
         _write_ui_state(last_action=action_id, last_action_ts=time.time(), last_error=str(exc))
         _log.warning("infrastate action failed: %s", action_id, exc_info=True)
+    finally:
+        if action_id:
+            _invalidate_after_action(action_id, webspace_id=webspace_id)
+            _schedule_action_inventory_streams(action_id, webspace_id=webspace_id)
     _schedule_snapshot_refresh(
         webspace_id=webspace_id,
         reason=f"infrastate.action:{action_id or '-'}",
