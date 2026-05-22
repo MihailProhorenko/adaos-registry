@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-05-22T14:08:06+00:00",
+  "updated_at": "2026-05-22T14:08:21+00:00",
   "skills": [
     {
       "kind": "skill",
@@ -465,8 +465,8 @@
       "kind": "scenario",
       "id": "new_face_vision_scenario",
       "name": "new_face_vision",
-      "version": "0.2.13",
-      "updated_at": "2026-05-22T12:46:22+00:00",
+      "version": "0.2.14",
+      "updated_at": "2026-05-22T14:08:21+00:00",
       "path": "scenarios/new_face_vision",
       "manifest": "scenarios/new_face_vision/scenario.yaml",
       "source": {

@@ -171,6 +171,32 @@
               }
             },
             {
+              "id": "frame-position",
+              "type": "input.frameSlider",
+              "area": "main",
+              "title": "Frame position",
+              "dataSource": {
+                "kind": "y",
+                "path": "data/new_face_vision/current/timeline"
+              },
+              "inputs": {
+                "valuePath": "current_frame",
+                "totalPath": "total_frames",
+                "calculatedCountPath": "calculated_count",
+                "calculatedRangesPath": "calculated_ranges"
+              },
+              "actions": [
+                {
+                  "on": "change",
+                  "type": "callSkill",
+                  "target": "new_face_vision_skill.new_face_vision_seek_frame",
+                  "params": {
+                    "frame_idx": "$event.frame_idx"
+                  }
+                }
+              ]
+            },
+            {
               "id": "bad-ratio-stream",
               "type": "visual.timeseriesChart",
               "area": "main",
@@ -352,22 +378,6 @@
                 "descriptionPath": "description",
                 "colorPath": "color",
                 "emptyText": "init"
-              }
-            },
-            {
-              "id": "threshold-state",
-              "type": "visual.metricTile",
-              "area": "right",
-              "title": "Threshold",
-              "dataSource": {
-                "kind": "y",
-                "path": "data/new_face_vision/current/quality"
-              },
-              "inputs": {
-                "valuePath": "threshold",
-                "format": "percent",
-                "emptyText": "--%",
-                "descriptionPath": "threshold_label"
               }
             },
             {
