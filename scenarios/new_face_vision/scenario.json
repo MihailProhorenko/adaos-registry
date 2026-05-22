@@ -148,6 +148,7 @@
               "inputs": {
                 "imageField": "image.src",
                 "aspectRatio": "4 / 1",
+                "retainLastImageOnEmpty": true,
                 "emptyText": "Load frames, then press Play or Step Forward.",
                 "metrics": [
                   {
@@ -326,13 +327,15 @@
               "title": "Bad ratio",
               "dataSource": {
                 "kind": "y",
-                "path": "data/new_face_vision/current/latest"
+                "path": "data/new_face_vision/current/quality"
               },
               "inputs": {
-                "valuePath": "pred_ratio",
+                "valuePath": "bad_ratio",
                 "format": "percent",
                 "emptyText": "--%",
-                "descriptionPath": "description"
+                "labelPath": "label",
+                "descriptionPath": "description",
+                "colorPath": "color"
               }
             },
             {
@@ -342,43 +345,46 @@
               "title": "Status",
               "dataSource": {
                 "kind": "y",
-                "path": "data/new_face_vision/current"
+                "path": "data/new_face_vision/current/activity"
               },
               "inputs": {
-                "valuePath": "status",
-                "descriptionPath": "playback.mode",
+                "valuePath": "label",
+                "descriptionPath": "description",
+                "colorPath": "color",
                 "emptyText": "init"
               }
             },
             {
-              "id": "total-frames",
+              "id": "threshold-state",
               "type": "visual.metricTile",
               "area": "right",
-              "title": "Frames",
+              "title": "Threshold",
+              "dataSource": {
+                "kind": "y",
+                "path": "data/new_face_vision/current/quality"
+              },
+              "inputs": {
+                "valuePath": "threshold",
+                "format": "percent",
+                "emptyText": "--%",
+                "descriptionPath": "threshold_label"
+              }
+            },
+            {
+              "id": "fps-state",
+              "type": "visual.metricTile",
+              "area": "right",
+              "title": "FPS",
               "dataSource": {
                 "kind": "y",
                 "path": "data/new_face_vision/current/stats"
               },
               "inputs": {
-                "valuePath": "total_frames",
-                "format": "integer",
-                "descriptionPath": "next_frame"
-              }
-            },
-            {
-              "id": "model-state",
-              "type": "visual.metricTile",
-              "area": "right",
-              "title": "Model",
-              "dataSource": {
-                "kind": "y",
-                "path": "data/new_face_vision/current/model"
-              },
-              "inputs": {
-                "valuePath": "loaded",
-                "format": "boolean",
-                "trueText": "Loaded",
-                "falseText": "No model"
+                "valuePath": "fps",
+                "format": "number",
+                "decimals": 1,
+                "emptyText": "--",
+                "descriptionPath": "target_fps"
               }
             },
             {
@@ -394,21 +400,6 @@
                 "valuePath": "mode",
                 "descriptionPath": "description",
                 "emptyText": "CPU"
-              }
-            },
-            {
-              "id": "masks-state",
-              "type": "visual.metricTile",
-              "area": "right",
-              "title": "Masks",
-              "dataSource": {
-                "kind": "y",
-                "path": "data/new_face_vision/current/stats"
-              },
-              "inputs": {
-                "valuePath": "loaded_masks",
-                "format": "integer",
-                "descriptionPath": "loaded_metadata"
               }
             },
             {
