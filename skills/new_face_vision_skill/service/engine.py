@@ -547,6 +547,9 @@ class NewFaceVisionEngine:
         target_idx = self.resolve_relative_frame_index(delta)
         return self.process_frame(target_idx, count_metrics=False)
 
+    def seek_frame(self, frame_idx: int | None) -> dict[str, Any]:
+        return self.process_frame(frame_idx, count_metrics=False)
+
     def resolve_relative_frame_index(self, delta: int) -> int | None:
         if not self._frames:
             return None
@@ -664,11 +667,13 @@ class NewFaceVisionEngine:
         compute = self._compute_info()
         quality = self._quality_info()
         activity = self._activity_info(status)
+        timeline = self._timeline_info()
         return {
             "ok": True,
             "status": status,
             "activity": activity,
             "quality": quality,
+            "timeline": timeline,
             "operation": dict(self._operation),
             "files": self._public_files(),
             "file_items": self._file_items(),
@@ -1135,6 +1140,42 @@ class NewFaceVisionEngine:
         if rounded is None:
             return "--"
         return f"{rounded:.2f}".rstrip("0").rstrip(".")
+
+    def _timeline_info(self) -> dict[str, Any]:
+        total_frames = len(self._frames)
+        current_frame = self._latest.get("frame_idx") if isinstance(self._latest, Mapping) else None
+        calculated_indices: list[int] = []
+        for key, row in self._result_rows.items():
+            try:
+                frame_idx = int(row.get("frame_idx", key))
+            except Exception:
+                continue
+            if 0 <= frame_idx < total_frames:
+                calculated_indices.append(frame_idx)
+        calculated_indices = sorted(set(calculated_indices))
+        return {
+            "total_frames": total_frames,
+            "current_frame": current_frame,
+            "next_frame": self._current_frame_idx,
+            "calculated_count": len(calculated_indices),
+            "calculated_ranges": self._compact_ranges(calculated_indices),
+        }
+
+    def _compact_ranges(self, values: list[int]) -> list[dict[str, int]]:
+        ranges: list[dict[str, int]] = []
+        if not values:
+            return ranges
+        start = values[0]
+        prev = values[0]
+        for value in values[1:]:
+            if value == prev + 1:
+                prev = value
+                continue
+            ranges.append({"start": start, "end": prev})
+            start = value
+            prev = value
+        ranges.append({"start": start, "end": prev})
+        return ranges
 
     def _compute_info(self) -> dict[str, Any]:
         deps_ok, deps_details = self._ensure_model_dependencies()

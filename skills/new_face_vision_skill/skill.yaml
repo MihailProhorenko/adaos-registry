@@ -1,5 +1,5 @@
 name: new_face_vision_skill
-version: 0.2.14
+version: 0.2.15
 description: Анализ дефектов камней на видео с помощью нейросети (сегментация DeepLabV3)
 entry: handlers/main.py
 runtime:
@@ -166,6 +166,18 @@ tools:
     properties:
       webspace_id:
         type: string
+- name: new_face_vision_seek_frame
+  description: Seek to a frame by index without changing aggregate metrics.
+  entry: handlers.main:new_face_vision_seek_frame
+  timeout_seconds: 180
+  input_schema:
+    type: object
+    properties:
+      frame_idx:
+        type: integer
+        minimum: 0
+      webspace_id:
+        type: string
 - name: new_face_vision_play
   description: Start stream-backed playback for the loaded frame set.
   entry: handlers.main:new_face_vision_play
@@ -180,6 +192,7 @@ tools:
 - name: new_face_vision_pause
   description: Pause stream-backed playback without clearing the current frame.
   entry: handlers.main:new_face_vision_pause
+  timeout_seconds: 90
   input_schema:
     type: object
     properties:
@@ -188,6 +201,7 @@ tools:
 - name: new_face_vision_stop
   description: Stop playback and reset the frame cursor.
   entry: handlers.main:new_face_vision_stop
+  timeout_seconds: 180
   input_schema:
     type: object
     properties:
@@ -347,5 +361,5 @@ data_projections:
   targets:
   - backend: yjs
     path: data/new_face_vision/history
-updated_at: '2026-05-22T12:46:02+00:00'
+updated_at: '2026-05-22T14:08:06+00:00'
 

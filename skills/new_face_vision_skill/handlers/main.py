@@ -674,6 +674,26 @@ def new_face_vision_step_back(webspace_id: str | None = None, **_: Any) -> dict[
         return _handle_error(exc, webspace_id=webspace_id)
 
 
+@tool("new_face_vision_seek_frame")
+def new_face_vision_seek_frame(
+    frame_idx: int | None = None,
+    webspace_id: str | None = None,
+    **_: Any,
+) -> dict[str, Any]:
+    try:
+        _republish_last_frame(webspace_id)
+        _mark_calculation_if_uncached(frame_idx, webspace_id)
+        with _ENGINE_LOCK:
+            result = _engine_instance().seek_frame(frame_idx)
+        if result.get("ok"):
+            _publish_frame_result(result, webspace_id=webspace_id)
+        else:
+            _publish_event("new_face_vision.frame", _compact_frame_event(result))
+        return _result_with_snapshot(result, webspace_id=webspace_id)
+    except Exception as exc:
+        return _handle_error(exc, webspace_id=webspace_id)
+
+
 @tool("new_face_vision_play")
 def new_face_vision_play(fps: float | None = None, webspace_id: str | None = None, **_: Any) -> dict[str, Any]:
     try:
@@ -800,6 +820,12 @@ def new_face_vision_action(id: str | None = None, value: Any = None, webspace_id
             return new_face_vision_step_forward(webspace_id=selected_webspace)
         if action in {"step_back", "back"}:
             return new_face_vision_step_back(webspace_id=selected_webspace)
+        if action in {"seek", "seek_frame", "goto_frame"}:
+            try:
+                frame_idx = int(_action_value(merged))
+            except Exception:
+                frame_idx = None
+            return new_face_vision_seek_frame(frame_idx=frame_idx, webspace_id=selected_webspace)
         if action == "play":
             return new_face_vision_play(webspace_id=selected_webspace)
         if action == "pause":
