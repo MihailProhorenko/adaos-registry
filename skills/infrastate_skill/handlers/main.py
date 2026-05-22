@@ -3978,6 +3978,8 @@ def _node_tabs(conf, ui_state: dict[str, Any], reliability: dict[str, Any]) -> t
             connected = _member_effective_connected(member)
             observed_via = str(member.get("observed_via") or "").strip()
             member_state = str(member.get("state") or ("connected" if connected else "offline")).strip().lower()
+            if connected and member_state in {"", "offline", "stale", "pending"}:
+                member_state = "connected"
             node_status = "online" if connected or member_state in {"online", "connected", "ready"} else "offline"
             member_label = str(member.get("node_label") or member.get("label") or "").strip() or _node_label(
                 member_names,
@@ -5636,8 +5638,11 @@ def _summary(
         summary_subtitle = f"{selected_label} | {selected_compact or 'N?'}"
         if build_ref:
             summary_subtitle += f" | {build_ref}"
+        link_state = str(selected_member.get("state") or "").strip().lower()
+        if remote_connected and link_state in {"", "offline", "stale", "pending"}:
+            link_state = "connected"
         message = (
-            f"hub-member link={selected_member.get('state') or 'connected'}"
+            f"hub-member link={link_state or 'connected'}"
             f" last_msg_ago={selected_member.get('last_message_ago_s') if selected_member.get('last_message_ago_s') is not None else '-'}"
             f" snapshot={selected_member.get('snapshot_state') or '-'}"
             f" node={lifecycle.get('node_state') or '-'}"
