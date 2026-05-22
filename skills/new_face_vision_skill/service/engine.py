@@ -92,6 +92,9 @@ class NewFaceVisionEngine:
         self._target_fps = 5.0
         self._actual_fps: float | None = None
         self._recent_frame_ts: list[float] = []
+        self._timeline_scan_at = 0.0
+        self._timeline_scan_signature = ""
+        self._timeline_cached_indices: list[int] = []
         self._playback: dict[str, Any] = {
             "mode": "idle",
             "fps": self._target_fps,
@@ -902,6 +905,9 @@ class NewFaceVisionEngine:
         self._iou_sum = 0.0
         self._actual_fps = None
         self._recent_frame_ts = []
+        self._timeline_scan_at = 0.0
+        self._timeline_scan_signature = ""
+        self._timeline_cached_indices = []
         self._playback = {
             "mode": mode,
             "fps": self._target_fps,
@@ -1144,22 +1150,50 @@ class NewFaceVisionEngine:
     def _timeline_info(self) -> dict[str, Any]:
         total_frames = len(self._frames)
         current_frame = self._latest.get("frame_idx") if isinstance(self._latest, Mapping) else None
-        calculated_indices: list[int] = []
+        calculated_indices: set[int] = set(self._cached_frame_indices())
         for key, row in self._result_rows.items():
             try:
                 frame_idx = int(row.get("frame_idx", key))
             except Exception:
                 continue
             if 0 <= frame_idx < total_frames:
-                calculated_indices.append(frame_idx)
-        calculated_indices = sorted(set(calculated_indices))
+                calculated_indices.add(frame_idx)
+        compact_indices = sorted(calculated_indices)
         return {
             "total_frames": total_frames,
             "current_frame": current_frame,
             "next_frame": self._current_frame_idx,
-            "calculated_count": len(calculated_indices),
-            "calculated_ranges": self._compact_ranges(calculated_indices),
+            "calculated_count": len(compact_indices),
+            "calculated_ranges": self._compact_ranges(compact_indices),
         }
+
+    def _cached_frame_indices(self) -> list[int]:
+        total_frames = len(self._frames)
+        if total_frames <= 0:
+            return []
+        signature_payload = {
+            "frames": total_frames,
+            "threshold": self._threshold,
+            "model": self._model_signature(),
+            "cache_files": self._count_cache_files(),
+        }
+        signature = json.dumps(signature_payload, sort_keys=True, separators=(",", ":"), default=str)
+        now = time.monotonic()
+        if signature == self._timeline_scan_signature and now - self._timeline_scan_at < 3.0:
+            return list(self._timeline_cached_indices)
+
+        indices: list[int] = []
+        for frame_idx in range(total_frames):
+            frame_ctx = self._frame_context(frame_idx)
+            cache_key = str(frame_ctx.get("cache_key") or "")
+            if not cache_key:
+                continue
+            if cache_key in self._prediction_cache or self._cache_path(cache_key).exists():
+                indices.append(frame_idx)
+        self._timeline_scan_signature = signature
+        self._timeline_scan_at = now
+        self._timeline_cached_indices = indices
+        return list(indices)
 
     def _compact_ranges(self, values: list[int]) -> list[dict[str, int]]:
         ranges: list[dict[str, int]] = []

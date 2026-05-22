@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-05-22T14:08:21+00:00",
+  "updated_at": "2026-05-22T14:11:02+00:00",
   "skills": [
     {
       "kind": "skill",
@@ -214,8 +214,8 @@
       "kind": "skill",
       "id": "new_face_vision_skill",
       "name": "new_face_vision_skill",
-      "version": "0.2.15",
-      "updated_at": "2026-05-22T14:08:06+00:00",
+      "version": "0.2.16",
+      "updated_at": "2026-05-22T14:11:02+00:00",
       "path": "skills/new_face_vision_skill",
       "manifest": "skills/new_face_vision_skill/skill.yaml",
       "source": {
