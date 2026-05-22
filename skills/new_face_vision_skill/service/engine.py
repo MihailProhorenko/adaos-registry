@@ -603,7 +603,7 @@ class NewFaceVisionEngine:
             "ok": True,
             "status": status,
             "operation": dict(self._operation),
-            "files": dict(self._files),
+            "files": self._public_files(),
             "file_items": self._file_items(),
             "model": {
                 "loaded": self._model is not None or bool(self._model_path),
@@ -1225,6 +1225,33 @@ class NewFaceVisionEngine:
             out["source"] = dict(source_ref)
         return out
 
+    def _public_files(self) -> dict[str, dict[str, Any] | None]:
+        return {
+            kind: self._public_file_ref(ref)
+            for kind, ref in self._files.items()
+        }
+
+    def _public_file_ref(self, ref: Mapping[str, Any] | None) -> dict[str, Any] | None:
+        if not ref:
+            return None
+        name = str(ref.get("name") or Path(str(ref.get("path") or "")).name or "")
+        out: dict[str, Any] = {
+            "name": name,
+            "exists": ref.get("exists"),
+            "size_bytes": ref.get("size_bytes"),
+            "size_label": self._format_bytes(ref.get("size_bytes")),
+            "modified_at": ref.get("modified_at"),
+            "updated_at": ref.get("updated_at"),
+        }
+        cleanup = ref.get("cleanup") if isinstance(ref, Mapping) else None
+        if isinstance(cleanup, Mapping):
+            out["cleanup"] = {
+                "deleted_count": cleanup.get("deleted_count"),
+                "deleted_names": cleanup.get("deleted_names"),
+                "deleted_bytes": cleanup.get("deleted_bytes"),
+            }
+        return out
+
     def _file_items(self) -> list[dict[str, Any]]:
         labels = {
             "model": "Model",
@@ -1255,7 +1282,6 @@ class NewFaceVisionEngine:
             title_suffix = f" ({counter})" if counter else ""
             details = {
                 "kind": kind,
-                "path": ref.get("path"),
                 "size": size_label,
                 "size_bytes": ref.get("size_bytes"),
                 "modified_at": ref.get("modified_at"),

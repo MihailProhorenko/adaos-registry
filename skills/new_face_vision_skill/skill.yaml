@@ -1,5 +1,5 @@
 name: new_face_vision_skill
-version: 0.2.9
+version: 0.2.10
 description: Анализ дефектов камней на видео с помощью нейросети (сегментация DeepLabV3)
 entry: handlers/main.py
 runtime:
@@ -337,5 +337,5 @@ data_projections:
   targets:
   - backend: yjs
     path: data/new_face_vision/history
-updated_at: '2026-05-22T07:33:52+00:00'
+updated_at: '2026-05-22T07:38:48+00:00'
 
