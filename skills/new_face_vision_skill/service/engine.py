@@ -47,10 +47,17 @@ _PREVIEW_MIN_WIDTH = 320
 _PREVIEW_MIN_HEIGHT = 90
 _PREVIEW_JPEG_MAX_BYTES = 12_000
 _PREVIEW_JPEG_QUALITIES = (62, 54, 46, 38, 32)
+_STATE_MANIFEST = "state_manifest.json"
+_UPLOAD_EXTENSIONS = {
+    "model": {".pt", ".pth", ".bin", ".ckpt"},
+    "frames": {".zip"},
+    "masks": {".zip"},
+    "metadata": {".jsonl", ".json", ".ndjson"},
+}
 
 
 class NewFaceVisionEngine:
-    def __init__(self, state_dir: Path):
+    def __init__(self, state_dir: Path, upload_root: Path | None = None):
         self.state_dir = Path(state_dir)
         self.state_dir.mkdir(parents=True, exist_ok=True)
 
@@ -58,6 +65,8 @@ class NewFaceVisionEngine:
         self.masks_dir = self.state_dir / "masks"
         self.frames_dir.mkdir(exist_ok=True)
         self.masks_dir.mkdir(exist_ok=True)
+        self.manifest_path = self.state_dir / _STATE_MANIFEST
+        self.upload_root = Path(upload_root).resolve() if upload_root else self._infer_upload_root()
 
         self._device = "cuda" if (torch is not None and torch.cuda.is_available()) else "cpu"
         self._model = None
@@ -97,6 +106,7 @@ class NewFaceVisionEngine:
         self._latest: dict[str, Any] | None = None
         self.last_error: dict[str, Any] | None = None
 
+        self.rehydrate()
         _log.info(f"NewFaceVisionEngine initialized. Device: {self._device}")
 
     def configure(
@@ -149,44 +159,100 @@ class NewFaceVisionEngine:
                 result["ok"] = False
                 return result
 
+        self.persist_state()
         return result
+
+    def persist_state(self, *, cleared: bool = False) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "schema": "new_face_vision.state.v1",
+            "updated_at": time.time(),
+            "files": dict(self._files),
+            "thresholds": {
+                "prediction": self._threshold,
+                "warning": self._warning_threshold,
+                "alarm": self._alarm_threshold,
+            },
+        }
+        if cleared:
+            payload["cleared_at"] = time.time()
+        try:
+            tmp = self.manifest_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+            os.replace(tmp, self.manifest_path)
+            return {"ok": True, "path": str(self.manifest_path)}
+        except Exception as exc:
+            _log.warning("failed to persist new_face_vision state: %s", exc)
+            return {"ok": False, "error": str(exc), "path": str(self.manifest_path)}
+
+    def rehydrate(self, *, force: bool = False) -> dict[str, Any]:
+        if force:
+            self._model = None
+            self._model_path = None
+            self._frames = {}
+            self._masks = {}
+            self._metadata = {}
+            self._files = {
+                "model": None,
+                "frames": None,
+                "masks": None,
+                "metadata": None,
+            }
+            self._prediction_cache = {}
+            self._latest = None
+
+        manifest = self._read_state_manifest()
+        if manifest.get("cleared_at"):
+            return {
+                "ok": True,
+                "source": "manifest",
+                "cleared": True,
+                "restored": {"model": False, "frames": 0, "masks": 0, "metadata": 0},
+            }
+
+        source = "manifest" if manifest else "legacy"
+        files = manifest.get("files") if isinstance(manifest.get("files"), Mapping) else None
+        if files is None:
+            files = self._discover_latest_upload_refs()
+
+        thresholds = manifest.get("thresholds") if isinstance(manifest.get("thresholds"), Mapping) else {}
+        self._restore_thresholds(thresholds)
+
+        restored = {
+            "model": False,
+            "frames": 0,
+            "masks": 0,
+            "metadata": 0,
+        }
+
+        model_ref = self._normalize_file_ref(files.get("model") if isinstance(files, Mapping) else None)
+        if model_ref:
+            self._files["model"] = model_ref
+            model_path = self._path_from_ref(model_ref)
+            if model_path and Path(model_path).exists():
+                self._model_path = model_path
+                restored["model"] = True
+
+        frames_ref = self._normalize_file_ref(files.get("frames") if isinstance(files, Mapping) else None)
+        restored["frames"] = self._restore_image_set("frames", frames_ref, self.frames_dir)
+
+        masks_ref = self._normalize_file_ref(files.get("masks") if isinstance(files, Mapping) else None)
+        restored["masks"] = self._restore_image_set("masks", masks_ref, self.masks_dir)
+
+        metadata_ref = self._normalize_file_ref(files.get("metadata") if isinstance(files, Mapping) else None)
+        restored["metadata"] = self._restore_metadata(metadata_ref)
+
+        if any(restored.values()) and not manifest:
+            self.persist_state()
+        return {"ok": True, "source": source, "restored": restored}
 
     def load_model(self, path: str, *, source_ref: Mapping[str, Any] | None = None) -> dict[str, Any]:
         try:
             self._begin_operation("load_model", "Load model")
             _log.info(f"Loading model from {path}")
 
-            deps_ok, deps_details = self._ensure_model_dependencies()
-            if not deps_ok:
-                return self._fail_operation(
-                    {
-                        "message": "torch/torchvision are not installed",
-                        "details": deps_details,
-                    },
-                    code="dependency_missing",
-                )
-
-            if not os.path.exists(path):
-                return self._fail_operation(f"Model file not found: {path}", code="file_not_found")
-
-            checkpoint = torch.load(path, map_location=self._device)
-
-            model = torchvision.models.segmentation.deeplabv3_resnet50(
-                weights=None,
-                weights_backbone=None
-            )
-            model.classifier[-1] = nn.Conv2d(256, 1, kernel_size=1)
-
-            if 'model_state' in checkpoint:
-                model.load_state_dict(checkpoint['model_state'], strict=False)
-                _log.info(f"Loaded checkpoint epoch: {checkpoint.get('epoch', '?')}")
-            else:
-                model.load_state_dict(checkpoint, strict=False)
-
-            model.to(self._device)
-            model.eval()
-            self._model = model
-            self._model_path = path
+            model_result = self._load_model_weights(path)
+            if not model_result.get("ok"):
+                return self._fail_operation(model_result, code=str(model_result.get("code") or "load_model_failed"))
             self._files["model"] = self._file_ref(path, source_ref=source_ref)
 
             size_mb = os.path.getsize(path) / 1024 / 1024
@@ -195,6 +261,7 @@ class NewFaceVisionEngine:
             cleanup = self._cleanup_previous_uploads(Path(path))
             if cleanup:
                 self._files["model"]["cleanup"] = cleanup
+            self.persist_state()
             self._end_operation()
             return {"ok": True, "model_loaded": True, "device": self._device, "size_mb": round(size_mb, 1)}
 
@@ -247,6 +314,7 @@ class NewFaceVisionEngine:
             cleanup = self._cleanup_previous_uploads(Path(path))
             if cleanup:
                 self._files["frames"]["cleanup"] = cleanup
+            self.persist_state()
             self._end_operation()
             return {"ok": True, "total_frames": len(self._frames)}
 
@@ -292,6 +360,7 @@ class NewFaceVisionEngine:
             cleanup = self._cleanup_previous_uploads(Path(path))
             if cleanup:
                 self._files["masks"]["cleanup"] = cleanup
+            self.persist_state()
             self._end_operation()
             return {"ok": True, "loaded_masks": len(self._masks)}
 
@@ -324,6 +393,7 @@ class NewFaceVisionEngine:
             cleanup = self._cleanup_previous_uploads(Path(path))
             if cleanup:
                 self._files["metadata"]["cleanup"] = cleanup
+            self.persist_state()
             self._end_operation()
             return {"ok": True, "loaded_metadata": len(self._metadata)}
 
@@ -374,6 +444,14 @@ class NewFaceVisionEngine:
                 if frame_key in key or key in frame_key:
                     gt_mask = self._load_image_ref(self._masks[key])
                     break
+
+            if self._model is None and self._model_path:
+                model_result = self._load_model_weights(self._model_path)
+                if not model_result.get("ok"):
+                    return self._fail_operation(
+                        model_result,
+                        code=str(model_result.get("code") or "restore_model_failed"),
+                    )
 
             if self._model is not None:
                 predicted_mask, _ = self._predict_with_model(frame)
@@ -515,6 +593,7 @@ class NewFaceVisionEngine:
                 shutil.rmtree(dir_path)
                 dir_path.mkdir(exist_ok=True)
 
+        self.persist_state(cleared=True)
         _log.info("Engine cleared")
         return {"ok": True, "message": "All data cleared"}
 
@@ -527,7 +606,9 @@ class NewFaceVisionEngine:
             "files": dict(self._files),
             "file_items": self._file_items(),
             "model": {
-                "loaded": self._model is not None,
+                "loaded": self._model is not None or bool(self._model_path),
+                "materialized": self._model is not None,
+                "available": bool(self._model_path),
                 "path": self._model_path,
                 "device": self._device,
             },
@@ -535,7 +616,8 @@ class NewFaceVisionEngine:
                 "total_frames": len(self._frames),
                 "loaded_masks": len(self._masks),
                 "loaded_metadata": len(self._metadata),
-                "model_loaded": self._model is not None,
+                "model_loaded": self._model is not None or bool(self._model_path),
+                "model_materialized": self._model is not None,
                 "current_frame": self._latest.get("frame_idx") if self._latest else None,
                 "next_frame": self._current_frame_idx,
                 "processed_frames": self._processed_frames,
@@ -826,6 +908,244 @@ class NewFaceVisionEngine:
             return None
         return round(parsed, 4)
 
+    def _infer_upload_root(self) -> Path | None:
+        for key in ("ADAOS_SKILL_ENV_PATH", "ADAOS_SKILL_MEMORY_PATH"):
+            raw = str(os.getenv(key) or "").strip()
+            if not raw:
+                continue
+            path = Path(raw)
+            data_root = path.parent.parent if path.parent.name == "db" else path.parent
+            candidate = (data_root / "files" / "uploads").resolve()
+            if candidate.exists():
+                return candidate
+        return None
+
+    def _read_state_manifest(self) -> dict[str, Any]:
+        if not self.manifest_path.exists():
+            return {}
+        try:
+            payload = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _restore_thresholds(self, thresholds: Mapping[str, Any]) -> None:
+        if not isinstance(thresholds, Mapping):
+            return
+        prediction = thresholds.get("prediction", thresholds.get("threshold"))
+        warning = thresholds.get("warning", thresholds.get("warning_threshold"))
+        alarm = thresholds.get("alarm", thresholds.get("alarm_threshold"))
+        if prediction is not None:
+            self._threshold = self._normalize_threshold(prediction, fallback=self._threshold)
+        if warning is not None:
+            self._warning_threshold = self._normalize_threshold(warning, fallback=self._warning_threshold)
+        if alarm is not None:
+            self._alarm_threshold = self._normalize_threshold(alarm, fallback=self._alarm_threshold)
+
+    def _discover_latest_upload_refs(self) -> dict[str, dict[str, Any]]:
+        if self.upload_root is None or not self.upload_root.exists():
+            return {}
+        refs: dict[str, dict[str, Any]] = {}
+        for kind, extensions in _UPLOAD_EXTENSIONS.items():
+            purpose_dir = self.upload_root / kind
+            if not purpose_dir.exists():
+                continue
+            candidates = [
+                path
+                for path in purpose_dir.rglob("*")
+                if path.is_file() and not path.name.startswith(".") and path.suffix.lower() in extensions
+            ]
+            if not candidates:
+                candidates = [path for path in purpose_dir.rglob("*") if path.is_file() and not path.name.startswith(".")]
+            if not candidates:
+                continue
+            latest = max(candidates, key=lambda path: path.stat().st_mtime)
+            refs[kind] = self._file_ref(
+                str(latest),
+                source_ref={
+                    "purpose": kind,
+                    "path": str(latest),
+                    "source": "legacy_upload_scan",
+                },
+            )
+        return refs
+
+    def _path_from_ref(self, value: Any) -> str:
+        if isinstance(value, Mapping):
+            for key in ("path", "local_path", "stored_path", "file_path", "abs_path", "absolute_path"):
+                raw = value.get(key)
+                if raw:
+                    return self._path_from_ref(raw)
+            nested = value.get("source")
+            if isinstance(nested, Mapping):
+                resolved = self._path_from_ref(nested)
+                if resolved:
+                    return resolved
+            uri = str(value.get("uri") or value.get("url") or "").strip()
+            if uri.startswith("file://"):
+                return uri[len("file://") :]
+            return ""
+        text = str(value or "").strip()
+        if text.startswith("file://"):
+            return text[len("file://") :]
+        return text
+
+    def _normalize_file_ref(self, value: Any) -> dict[str, Any] | None:
+        if not value:
+            return None
+        if isinstance(value, Mapping):
+            path = self._path_from_ref(value)
+            if not path:
+                return dict(value)
+            source = value.get("source") if isinstance(value.get("source"), Mapping) else None
+            refreshed = self._file_ref(path, source_ref=source)
+            for key in (
+                "id",
+                "artifact_id",
+                "purpose",
+                "sha256",
+                "mime",
+                "relative_path",
+                "uri",
+                "local_path",
+                "stored_path",
+                "cleanup",
+            ):
+                if key in value and key not in refreshed:
+                    refreshed[key] = value.get(key)
+            return refreshed
+        path = self._path_from_ref(value)
+        return self._file_ref(path) if path else None
+
+    def _restore_image_set(self, kind: str, ref: Mapping[str, Any] | None, target_dir: Path) -> int:
+        if ref:
+            self._files[kind] = dict(ref)
+
+        source_path_text = self._path_from_ref(ref)
+        images_dir = target_dir
+        try:
+            source_path = Path(source_path_text) if source_path_text else None
+            if source_path and source_path.exists():
+                if source_path.is_file() and source_path.suffix.lower() == ".zip":
+                    if not self._load_images_from_folder(str(target_dir)):
+                        if target_dir.exists():
+                            shutil.rmtree(target_dir)
+                        target_dir.mkdir(parents=True, exist_ok=True)
+                        self._extract_zip_safely(source_path, target_dir)
+                    images_dir = target_dir
+                elif source_path.is_dir():
+                    images_dir = source_path
+        except Exception as exc:
+            self.last_error = self._normalize_error(
+                {
+                    "code": f"{kind}_rehydrate_failed",
+                    "message": str(exc),
+                    "retryable": False,
+                },
+                code=f"{kind}_rehydrate_failed",
+            )
+            return 0
+
+        images = self._load_images_from_folder(str(images_dir))
+        if images and not ref:
+            self._files[kind] = self._file_ref(str(images_dir))
+        if kind == "frames":
+            self._frames = images
+            if images:
+                self._current_frame_idx = 0
+                self._prediction_cache = {}
+                self._latest = None
+                self._begin_run(mode="idle", bump=False)
+        elif kind == "masks":
+            self._masks = images
+        return len(images)
+
+    def _restore_metadata(self, ref: Mapping[str, Any] | None) -> int:
+        if ref:
+            self._files["metadata"] = dict(ref)
+        path_text = self._path_from_ref(ref)
+        if not path_text:
+            return 0
+        path = Path(path_text)
+        if not path.exists() or not path.is_file():
+            return 0
+
+        restored: dict[int, Any] = {}
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                for index, line in enumerate(handle):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(data, Mapping):
+                        frame_idx = data.get("frame_idx", index)
+                        try:
+                            restored[int(frame_idx)] = dict(data)
+                        except Exception:
+                            restored[index] = dict(data)
+        except Exception as exc:
+            self.last_error = self._normalize_error(
+                {
+                    "code": "metadata_rehydrate_failed",
+                    "message": str(exc),
+                    "retryable": False,
+                },
+                code="metadata_rehydrate_failed",
+            )
+            return 0
+        self._metadata = restored
+        if restored and not ref:
+            self._files["metadata"] = self._file_ref(str(path))
+        return len(restored)
+
+    def _load_model_weights(self, path: str) -> dict[str, Any]:
+        deps_ok, deps_details = self._ensure_model_dependencies()
+        if not deps_ok:
+            return {
+                "ok": False,
+                "code": "dependency_missing",
+                "message": "torch/torchvision are not installed",
+                "details": deps_details,
+            }
+
+        if not os.path.exists(path):
+            return {
+                "ok": False,
+                "code": "file_not_found",
+                "message": f"Model file not found: {path}",
+            }
+
+        try:
+            checkpoint = torch.load(path, map_location=self._device)
+
+            model = torchvision.models.segmentation.deeplabv3_resnet50(
+                weights=None,
+                weights_backbone=None,
+            )
+            model.classifier[-1] = nn.Conv2d(256, 1, kernel_size=1)
+
+            if "model_state" in checkpoint:
+                model.load_state_dict(checkpoint["model_state"], strict=False)
+                _log.info(f"Loaded checkpoint epoch: {checkpoint.get('epoch', '?')}")
+            else:
+                model.load_state_dict(checkpoint, strict=False)
+
+            model.to(self._device)
+            model.eval()
+            self._model = model
+            self._model_path = path
+            return {"ok": True}
+        except Exception as exc:
+            return {
+                "ok": False,
+                "code": "load_model_failed",
+                "message": str(exc),
+            }
+
     def _ensure_image_dependencies(self) -> tuple[bool, dict[str, str]]:
         global Image, np, _numpy_import_error, _pillow_import_error
 
@@ -891,13 +1211,13 @@ class NewFaceVisionEngine:
     def _file_ref(self, path: str, *, source_ref: Mapping[str, Any] | None = None) -> dict[str, Any]:
         file_path = Path(path)
         stat = None
-        if file_path.exists() and file_path.is_file():
+        if file_path.exists():
             stat = file_path.stat()
         out = {
             "path": str(file_path),
             "name": file_path.name,
             "exists": file_path.exists(),
-            "size_bytes": stat.st_size if stat is not None else None,
+            "size_bytes": stat.st_size if stat is not None and file_path.is_file() else None,
             "modified_at": stat.st_mtime if stat is not None else None,
             "updated_at": stat.st_mtime if stat is not None else None,
         }
@@ -919,7 +1239,7 @@ class NewFaceVisionEngine:
             "metadata": "document-text-outline",
         }
         counters = {
-            "model": "loaded" if self._model is not None else "",
+            "model": "loaded" if self._model is not None else "available" if self._model_path else "",
             "frames": f"{len(self._frames)} frames" if self._frames else "",
             "masks": f"{len(self._masks)} masks" if self._masks else "",
             "metadata": f"{len(self._metadata)} rows" if self._metadata else "",
@@ -1031,9 +1351,6 @@ class NewFaceVisionEngine:
     def _load_images_from_folder(self, folder_path: str) -> dict[str, Path]:
         images: dict[str, Path] = {}
         folder = Path(folder_path)
-
-        if Image is None:
-            return images
 
         if not folder.exists():
             return images

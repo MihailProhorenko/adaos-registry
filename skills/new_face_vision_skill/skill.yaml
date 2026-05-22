@@ -1,5 +1,5 @@
 name: new_face_vision_skill
-version: 0.2.7
+version: 0.2.9
 description: Анализ дефектов камней на видео с помощью нейросети (сегментация DeepLabV3)
 entry: handlers/main.py
 runtime:
@@ -9,7 +9,26 @@ dependencies:
 - numpy>=1.24.0
 - torch>=2.2.0
 - torchvision>=0.17.0
+lifecycle:
+  persist_before_switch: new_face_vision_persist_state
+  rehydrate: new_face_vision_rehydrate
 tools:
+- name: new_face_vision_persist_state
+  description: Persist the active uploaded file manifest for runtime handoff.
+  entry: handlers.main:new_face_vision_persist_state
+  input_schema:
+    type: object
+    properties:
+      webspace_id:
+        type: string
+- name: new_face_vision_rehydrate
+  description: Restore active files and counters from durable skill state.
+  entry: handlers.main:new_face_vision_rehydrate
+  input_schema:
+    type: object
+    properties:
+      webspace_id:
+        type: string
 - name: new_face_vision_status
   description: Получить текущий статус скилла и статистику
   entry: handlers.main:new_face_vision_status
@@ -318,5 +337,5 @@ data_projections:
   targets:
   - backend: yjs
     path: data/new_face_vision/history
-updated_at: '2026-05-21T12:41:03+00:00'
+updated_at: '2026-05-22T07:33:52+00:00'
 

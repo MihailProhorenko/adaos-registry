@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sys
 import threading
 import time
@@ -66,11 +67,40 @@ def _state_dir() -> Path:
         return Path(__file__).resolve().parents[1] / ".state"
 
 
+def _uploads_dir() -> Path | None:
+    for key in ("ADAOS_SKILL_ENV_PATH", "ADAOS_SKILL_MEMORY_PATH"):
+        raw = str(os.getenv(key) or "").strip()
+        if not raw:
+            continue
+        path = Path(raw)
+        data_root = path.parent.parent if path.parent.name == "db" else path.parent
+        candidate = (data_root / "files" / "uploads").resolve()
+        if candidate.exists():
+            return candidate
+    try:
+        ctx = get_ctx()
+        runtime_root = Path(ctx.paths.workspace_dir()) / "skills" / ".runtime" / SKILL_NAME
+        current_version_path = runtime_root / "current_version"
+        if current_version_path.exists():
+            current_version = current_version_path.read_text(encoding="utf-8").strip()
+            if current_version:
+                major_minor = ".".join(current_version.lstrip("vV").split(".")[:2]) or current_version
+                candidate = runtime_root / f"v{major_minor}" / "data" / "files" / "uploads"
+                if candidate.exists():
+                    return candidate.resolve()
+        candidates = [path for path in runtime_root.glob("*/data/files/uploads") if path.exists()]
+        if candidates:
+            return max(candidates, key=lambda path: path.stat().st_mtime).resolve()
+    except Exception:
+        _log.debug("failed to discover new_face_vision upload directory", exc_info=True)
+    return None
+
+
 def _engine_instance() -> Any:
     global _engine
     if _engine is None:
         engine_class = _get_engine_class()
-        _engine = engine_class(_state_dir())
+        _engine = engine_class(_state_dir(), upload_root=_uploads_dir())
     return _engine
 
 
@@ -428,6 +458,26 @@ def _handle_error(exc: Exception, *, webspace_id: str | None = None) -> dict[str
     _publish_event("new_face_vision.error", payload)
     _publish_progress(snapshot, ok=False, error=error, webspace_id=webspace_id)
     return payload
+
+
+@tool("new_face_vision_persist_state")
+def new_face_vision_persist_state(webspace_id: str | None = None, **_: Any) -> dict[str, Any]:
+    try:
+        with _ENGINE_LOCK:
+            result = _engine_instance().persist_state()
+        return _result_with_snapshot(result, webspace_id=webspace_id)
+    except Exception as exc:
+        return _handle_error(exc, webspace_id=webspace_id)
+
+
+@tool("new_face_vision_rehydrate")
+def new_face_vision_rehydrate(webspace_id: str | None = None, **_: Any) -> dict[str, Any]:
+    try:
+        with _ENGINE_LOCK:
+            result = _engine_instance().rehydrate(force=True)
+        return _result_with_snapshot(result, webspace_id=webspace_id)
+    except Exception as exc:
+        return _handle_error(exc, webspace_id=webspace_id)
 
 
 @tool("new_face_vision_status")
