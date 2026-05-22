@@ -11,7 +11,6 @@ from adaos.sdk.data import ProjectionContext, StreamReceiver, StreamRuntime, ctx
 from adaos.sdk.io import stream_publish
 from adaos.sdk.io.out import chat_append, say
 from adaos.services.agent_context import get_ctx
-from adaos.services.yjs.doc import get_ydoc
 from adaos.services.yjs.webspace import default_webspace_id
 from adaos.skills.runtime_runner import execute_tool
 
@@ -63,6 +62,8 @@ _DATA_PROJECTION_ENTRIES = [
 ]
 _MAX_MESSAGES = 80
 _STREAM_TAIL_MAX_MESSAGES = 80
+_MAX_STATE_KEYS = 32
+_STATE_TTL_S = 3600.0
 _VOICE_TAIL_RECEIVER = "voice_chat.messages"
 _STATE_BY_KEY: dict[str, dict[str, Any]] = {}
 
@@ -99,9 +100,35 @@ def _state_for(webspace_id: str, target_node_id: str | None = None) -> dict[str,
     if not isinstance(state, dict):
         state = {"messages": [], "last_refresh_ts": time.time()}
         _STATE_BY_KEY[key] = state
+    state["last_access_ts"] = time.time()
     if not isinstance(state.get("messages"), list):
         state["messages"] = []
+    _prune_state_cache()
     return state
+
+
+def _prune_state_cache() -> None:
+    if len(_STATE_BY_KEY) <= _MAX_STATE_KEYS:
+        return
+    now = time.time()
+    stale_keys = [
+        key
+        for key, state in _STATE_BY_KEY.items()
+        if now - float(state.get("last_access_ts") or state.get("last_refresh_ts") or 0.0) > _STATE_TTL_S
+    ]
+    for key in stale_keys:
+        _STATE_BY_KEY.pop(key, None)
+        if len(_STATE_BY_KEY) <= _MAX_STATE_KEYS:
+            return
+    overflow = len(_STATE_BY_KEY) - _MAX_STATE_KEYS
+    if overflow <= 0:
+        return
+    oldest = sorted(
+        _STATE_BY_KEY.items(),
+        key=lambda item: float(item[1].get("last_access_ts") or item[1].get("last_refresh_ts") or 0.0),
+    )
+    for key, _state in oldest[:overflow]:
+        _STATE_BY_KEY.pop(key, None)
 
 
 def _bounded_messages(raw: Any, *, limit: int = _MAX_MESSAGES) -> list[dict[str, Any]]:
@@ -144,41 +171,6 @@ def _tail_stream_payload(state: Mapping[str, Any]) -> dict[str, Any]:
         "last_refresh_ts": state.get("last_refresh_ts") or time.time(),
         "message_count": len(messages),
     }
-
-
-def _legacy_state_from_ydoc(webspace_id: str, target_node_id: str | None = None) -> dict[str, Any] | None:
-    try:
-        with get_ydoc(webspace_id, read_only=True, load_mark_roots=["data"]) as ydoc:
-            raw_data = ydoc.get_map("data").to_json()
-    except TypeError:
-        try:
-            with get_ydoc(webspace_id) as ydoc:
-                raw_data = ydoc.get_map("data").to_json()
-        except Exception:
-            return None
-    except Exception:
-        return None
-    if not isinstance(raw_data, Mapping):
-        return None
-    node_id = str(target_node_id or "").strip()
-    if node_id:
-        nodes = raw_data.get("nodes")
-        if isinstance(nodes, Mapping):
-            node_payload = nodes.get(node_id)
-            if isinstance(node_payload, Mapping):
-                voice = node_payload.get("voice_chat")
-                if isinstance(voice, Mapping):
-                    return {
-                        "messages": _bounded_messages(voice.get("messages"), limit=_MAX_MESSAGES),
-                        "last_refresh_ts": voice.get("last_refresh_ts") or time.time(),
-                    }
-    voice = raw_data.get("voice_chat")
-    if isinstance(voice, Mapping):
-        return {
-            "messages": _bounded_messages(voice.get("messages"), limit=_MAX_MESSAGES),
-            "last_refresh_ts": voice.get("last_refresh_ts") or time.time(),
-        }
-    return None
 
 
 def _message(from_: str, text: str) -> dict[str, Any]:
@@ -381,13 +373,6 @@ def get_snapshot(
     selected_node_id = str(target_node_id or node_id or "").strip() or None
     selected_webspace = str(webspace_id or default_webspace_id()).strip() or default_webspace_id()
     snapshot = dict(_state_for(selected_webspace, selected_node_id))
-    if not snapshot.get("messages"):
-        legacy = _legacy_state_from_ydoc(selected_webspace, selected_node_id)
-        if legacy:
-            state = _state_for(selected_webspace, selected_node_id)
-            state["messages"] = _bounded_messages(legacy.get("messages"), limit=_MAX_MESSAGES)
-            state["last_refresh_ts"] = legacy.get("last_refresh_ts") or time.time()
-            snapshot = dict(state)
     _project_state(selected_webspace, selected_node_id)
     _publish_tail_stream(selected_webspace, selected_node_id, force=True)
     return {
@@ -405,12 +390,6 @@ def on_webio_stream_snapshot_requested(evt: Any) -> None:
         return
     webspace_id = str(payload.get("webspace_id") or payload.get("workspace_id") or default_webspace_id()).strip() or default_webspace_id()
     target_node_id = str(payload.get("target_node_id") or payload.get("node_id") or "").strip() or None
-    if not _state_for(webspace_id, target_node_id).get("messages"):
-        legacy = _legacy_state_from_ydoc(webspace_id, target_node_id)
-        if legacy:
-            state = _state_for(webspace_id, target_node_id)
-            state["messages"] = _bounded_messages(legacy.get("messages"), limit=_MAX_MESSAGES)
-            state["last_refresh_ts"] = legacy.get("last_refresh_ts") or time.time()
     _publish_tail_stream(webspace_id, target_node_id, force=True)
 
 
