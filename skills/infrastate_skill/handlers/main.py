@@ -3890,6 +3890,23 @@ def _hub_member_connection_state(reliability: dict[str, Any]) -> dict[str, Any]:
     return state if isinstance(state, dict) else {}
 
 
+def _member_connection_items(reliability: dict[str, Any]) -> list[dict[str, Any]]:
+    conn_state = _hub_member_connection_state(reliability)
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for key in ("members", "known_members"):
+        members = conn_state.get(key) if isinstance(conn_state.get(key), list) else []
+        for member in members:
+            if not isinstance(member, dict):
+                continue
+            node_id = str(member.get("node_id") or "").strip()
+            if not node_id or node_id in seen:
+                continue
+            items.append(member)
+            seen.add(node_id)
+    return items
+
+
 def _node_label(node_names: Any, *, fallback: str) -> str:
     if isinstance(node_names, list):
         for item in node_names:
@@ -3933,10 +3950,7 @@ def _node_tabs(conf, ui_state: dict[str, Any], reliability: dict[str, Any]) -> t
             "node_index": local_display.get("node_index"),
         }
     ]
-    conn_state = _hub_member_connection_state(reliability)
-    members = conn_state.get("known_members") if isinstance(conn_state.get("known_members"), list) else []
-    if not members:
-        members = conn_state.get("members") if isinstance(conn_state.get("members"), list) else []
+    members = _member_connection_items(reliability)
     if role == "hub":
         for index, member in enumerate(members, start=1):
             if not isinstance(member, dict):
@@ -4048,11 +4062,7 @@ def _yjs_webspace_tabs(conf, ui_state: dict[str, Any], reliability: dict[str, An
 
 
 def _selected_member_entry(reliability: dict[str, Any], node_id: str) -> dict[str, Any]:
-    conn_state = _hub_member_connection_state(reliability)
-    members = conn_state.get("known_members") if isinstance(conn_state.get("known_members"), list) else []
-    if not members:
-        members = conn_state.get("members") if isinstance(conn_state.get("members"), list) else []
-    for item in members:
+    for item in _member_connection_items(reliability):
         if isinstance(item, dict) and str(item.get("node_id") or "") == node_id:
             return item
     return {}
