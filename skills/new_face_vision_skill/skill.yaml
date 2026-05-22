@@ -1,5 +1,5 @@
 name: new_face_vision_skill
-version: 0.2.11
+version: 0.2.12
 description: Анализ дефектов камней на видео с помощью нейросети (сегментация DeepLabV3)
 entry: handlers/main.py
 runtime:
@@ -71,6 +71,7 @@ tools:
 - name: new_face_vision_load_model
   description: Загрузить веса модели PyTorch
   entry: handlers.main:new_face_vision_load_model
+  timeout_seconds: 300
   input_schema:
     type: object
     properties:
@@ -85,6 +86,7 @@ tools:
 - name: new_face_vision_load_frames
   description: Загрузить кадры (ZIP с изображениями)
   entry: handlers.main:new_face_vision_load_frames
+  timeout_seconds: 300
   input_schema:
     type: object
     properties:
@@ -99,6 +101,7 @@ tools:
 - name: new_face_vision_load_masks
   description: Загрузить маски (ZIP с изображениями)
   entry: handlers.main:new_face_vision_load_masks
+  timeout_seconds: 300
   input_schema:
     type: object
     properties:
@@ -113,6 +116,7 @@ tools:
 - name: new_face_vision_load_metadata
   description: Загрузить метаданные (JSONL)
   entry: handlers.main:new_face_vision_load_metadata
+  timeout_seconds: 120
   input_schema:
     type: object
     properties:
@@ -127,6 +131,7 @@ tools:
 - name: new_face_vision_process_frame
   description: Обработать кадр и получить предсказание
   entry: handlers.main:new_face_vision_process_frame
+  timeout_seconds: 180
   input_schema:
     type: object
     properties:
@@ -137,6 +142,7 @@ tools:
 - name: new_face_vision_play_step
   description: Обработать следующий кадр (play)
   entry: handlers.main:new_face_vision_play_step
+  timeout_seconds: 180
   input_schema:
     type: object
     properties:
@@ -145,6 +151,7 @@ tools:
 - name: new_face_vision_step_forward
   description: Show the next frame result.
   entry: handlers.main:new_face_vision_step_forward
+  timeout_seconds: 180
   input_schema:
     type: object
     properties:
@@ -153,6 +160,7 @@ tools:
 - name: new_face_vision_step_back
   description: Show the previous frame result without changing aggregate metrics.
   entry: handlers.main:new_face_vision_step_back
+  timeout_seconds: 180
   input_schema:
     type: object
     properties:
@@ -161,6 +169,7 @@ tools:
 - name: new_face_vision_play
   description: Start stream-backed playback for the loaded frame set.
   entry: handlers.main:new_face_vision_play
+  timeout_seconds: 90
   input_schema:
     type: object
     properties:
@@ -187,6 +196,7 @@ tools:
 - name: new_face_vision_replay
   description: Reset the run and start playback from the first frame.
   entry: handlers.main:new_face_vision_replay
+  timeout_seconds: 90
   input_schema:
     type: object
     properties:
@@ -337,5 +347,5 @@ data_projections:
   targets:
   - backend: yjs
     path: data/new_face_vision/history
-updated_at: '2026-05-22T07:40:31+00:00'
+updated_at: '2026-05-22T11:57:57+00:00'
 

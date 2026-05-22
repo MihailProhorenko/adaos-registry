@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import hashlib
 import zipfile
 import shutil
 import io
@@ -63,8 +64,10 @@ class NewFaceVisionEngine:
 
         self.frames_dir = self.state_dir / "frames"
         self.masks_dir = self.state_dir / "masks"
+        self.cache_dir = self.state_dir / "prediction_cache"
         self.frames_dir.mkdir(exist_ok=True)
         self.masks_dir.mkdir(exist_ok=True)
+        self.cache_dir.mkdir(exist_ok=True)
         self.manifest_path = self.state_dir / _STATE_MANIFEST
         self.upload_root = Path(upload_root).resolve() if upload_root else self._infer_upload_root()
 
@@ -78,6 +81,9 @@ class NewFaceVisionEngine:
         self._warning_threshold = 0.05
         self._alarm_threshold = 0.15
         self._prediction_cache = {}
+        self._cache_hits = 0
+        self._cache_misses = 0
+        self._result_rows: dict[str, dict[str, Any]] = {}
         self._run_id = 1
         self._seq = 0
         self._processed_frames = 0
@@ -123,6 +129,7 @@ class NewFaceVisionEngine:
 
         if threshold is not None:
             self._threshold = self._normalize_threshold(threshold, fallback=self._threshold)
+            self._prediction_cache = {}
             result["actions"].append(f"threshold={self._threshold}")
         if warning_threshold is not None:
             self._warning_threshold = self._normalize_threshold(warning_threshold, fallback=self._warning_threshold)
@@ -198,6 +205,7 @@ class NewFaceVisionEngine:
                 "metadata": None,
             }
             self._prediction_cache = {}
+            self._result_rows = {}
             self._latest = None
 
         manifest = self._read_state_manifest()
@@ -258,6 +266,8 @@ class NewFaceVisionEngine:
             size_mb = os.path.getsize(path) / 1024 / 1024
             _log.info(f"Model loaded: {size_mb:.1f} MB on {self._device}")
 
+            self._prediction_cache = {}
+            self._result_rows = {}
             cleanup = self._cleanup_previous_uploads(Path(path))
             if cleanup:
                 self._files["model"]["cleanup"] = cleanup
@@ -303,6 +313,7 @@ class NewFaceVisionEngine:
             self._frames = self._load_images_from_folder(str(images_dir))
             self._current_frame_idx = 0
             self._prediction_cache = {}
+            self._result_rows = {}
             self._latest = None
             self._begin_run(mode="idle")
 
@@ -354,6 +365,8 @@ class NewFaceVisionEngine:
                 masks_dir = self.masks_dir
 
             self._masks = self._load_images_from_folder(str(masks_dir))
+            self._prediction_cache = {}
+            self._result_rows = {}
 
             _log.info(f"Loaded {len(self._masks)} masks")
             self._files["masks"] = self._file_ref(path, source_ref=source_ref)
@@ -389,6 +402,8 @@ class NewFaceVisionEngine:
                             continue
 
             _log.info(f"Loaded {len(self._metadata)} metadata entries")
+            self._prediction_cache = {}
+            self._result_rows = {}
             self._files["metadata"] = self._file_ref(path, source_ref=source_ref)
             cleanup = self._cleanup_previous_uploads(Path(path))
             if cleanup:
@@ -424,26 +439,54 @@ class NewFaceVisionEngine:
 
             if frame_idx >= len(frame_keys):
                 frame_idx = 0
+            if frame_idx < 0:
+                frame_idx = len(frame_keys) - 1
 
             frame_key = frame_keys[frame_idx]
-
-            cache_key = str(frame_idx)
+            frame_path = self._frames[frame_key]
+            mask_path = self._mask_path_for_frame(frame_key)
+            true_ratio = None
+            if frame_idx in self._metadata:
+                true_ratio = self._metadata[frame_idx].get('ratio_bad_true')
+            cache_key = self._result_cache_key(
+                frame_idx=frame_idx,
+                frame_key=frame_key,
+                frame_path=frame_path,
+                mask_path=mask_path,
+                true_ratio=true_ratio,
+            )
             if cache_key in self._prediction_cache:
+                self._cache_hits += 1
                 result = self._record_frame_result(
                     dict(self._prediction_cache[cache_key]),
                     total_frames=len(frame_keys),
                     count_metrics=count_metrics,
+                    cached=True,
+                )
+                self._end_operation()
+                return result
+            cached_result = self._load_cached_result(cache_key)
+            if cached_result:
+                self._cache_hits += 1
+                cached_result["frame_idx"] = frame_idx
+                cached_result["frame_key"] = frame_key
+                cached_result["total_frames"] = len(frame_keys)
+                self._remember_prediction(cache_key, cached_result)
+                result = self._record_frame_result(
+                    cached_result,
+                    total_frames=len(frame_keys),
+                    count_metrics=count_metrics,
+                    cached=True,
                 )
                 self._end_operation()
                 return result
 
-            frame = self._load_image_ref(self._frames[frame_key])
+            self._cache_misses += 1
+            frame = self._load_image_ref(frame_path)
 
             gt_mask = None
-            for key in self._masks:
-                if frame_key in key or key in frame_key:
-                    gt_mask = self._load_image_ref(self._masks[key])
-                    break
+            if mask_path is not None:
+                gt_mask = self._load_image_ref(mask_path)
 
             if self._model is None and self._model_path:
                 model_result = self._load_model_weights(self._model_path)
@@ -463,10 +506,6 @@ class NewFaceVisionEngine:
             preview_base64 = self._encode_preview_jpeg(side_by_side)
 
             pred_ratio = float(np.mean(np.array(predicted_mask) > 0))
-
-            true_ratio = None
-            if frame_idx in self._metadata:
-                true_ratio = self._metadata[frame_idx].get('ratio_bad_true')
 
             if pred_ratio >= self._alarm_threshold:
                 status, status_color = "Alarm", "red"
@@ -491,12 +530,18 @@ class NewFaceVisionEngine:
                 "status": status,
                 "status_color": status_color,
                 "metrics": metrics,
+                "cached": False,
+                "cache_key": cache_key,
             }
 
-            if len(self._prediction_cache) > 100:
-                self._prediction_cache.pop(next(iter(self._prediction_cache)))
-            self._prediction_cache[cache_key] = dict(result)
-            result = self._record_frame_result(result, total_frames=len(frame_keys), count_metrics=count_metrics)
+            self._store_cached_result(cache_key, result)
+            self._remember_prediction(cache_key, result)
+            result = self._record_frame_result(
+                result,
+                total_frames=len(frame_keys),
+                count_metrics=count_metrics,
+                cached=False,
+            )
             self._end_operation()
 
             return result
@@ -560,7 +605,6 @@ class NewFaceVisionEngine:
 
     def stop(self) -> dict[str, Any]:
         self._current_frame_idx = 0
-        self._latest = None
         self.set_playback("stopped")
         return {"ok": True, "message": "Playback stopped", "playback": dict(self._playback)}
 
@@ -572,6 +616,9 @@ class NewFaceVisionEngine:
         self._metadata = {}
         self._current_frame_idx = 0
         self._prediction_cache = {}
+        self._result_rows = {}
+        self._cache_hits = 0
+        self._cache_misses = 0
         self._latest = None
         self._begin_run(mode="idle", bump=False)
         self._files = {
@@ -592,6 +639,9 @@ class NewFaceVisionEngine:
             if dir_path.exists():
                 shutil.rmtree(dir_path)
                 dir_path.mkdir(exist_ok=True)
+        if self.cache_dir.exists():
+            shutil.rmtree(self.cache_dir)
+            self.cache_dir.mkdir(exist_ok=True)
 
         self.persist_state(cleared=True)
         _log.info("Engine cleared")
@@ -599,6 +649,7 @@ class NewFaceVisionEngine:
 
     def snapshot(self) -> dict[str, Any]:
         status = "error" if self.last_error else ("ready" if self._frames else "init")
+        compute = self._compute_info()
         return {
             "ok": True,
             "status": status,
@@ -612,6 +663,7 @@ class NewFaceVisionEngine:
                 "name": (self._files.get("model") or {}).get("name") if isinstance(self._files.get("model"), Mapping) else "",
                 "device": self._device,
             },
+            "compute": compute,
             "stats": {
                 "total_frames": len(self._frames),
                 "loaded_masks": len(self._masks),
@@ -629,6 +681,15 @@ class NewFaceVisionEngine:
                 ),
                 "fps": self._target_fps,
                 "run_id": self._run_id,
+                "cached_results": len(self._result_rows),
+                "cache_hits": self._cache_hits,
+                "cache_misses": self._cache_misses,
+            },
+            "cache": {
+                "memory_entries": len(self._prediction_cache),
+                "disk_entries": self._count_cache_files(),
+                "hits": self._cache_hits,
+                "misses": self._cache_misses,
             },
             "playback": dict(self._playback),
             "thresholds": {
@@ -638,7 +699,7 @@ class NewFaceVisionEngine:
             },
             "latest": self._latest or self._empty_latest(),
             "error": self.last_error,
-            "history": [],
+            "history": self._history_rows(),
         }
 
     def frame_stream_payload(self, result: Mapping[str, Any]) -> dict[str, Any]:
@@ -726,12 +787,15 @@ class NewFaceVisionEngine:
         *,
         total_frames: int,
         count_metrics: bool = True,
+        cached: bool | None = None,
     ) -> dict[str, Any]:
         if not result.get("ok"):
             return dict(result)
         frame_idx = int(result.get("frame_idx") or 0)
         metrics = result.get("metrics") if isinstance(result.get("metrics"), Mapping) else {}
         recorded = dict(result)
+        if cached is not None:
+            recorded["cached"] = bool(cached)
         self._seq += 1
         recorded["seq"] = self._seq
         recorded["run_id"] = self._run_id
@@ -780,6 +844,7 @@ class NewFaceVisionEngine:
             "last_frame_idx": frame_idx,
             "updated_at": self._latest["ts"],
         }
+        self._record_result_row(recorded)
         return recorded
 
     def _empty_latest(self) -> dict[str, Any]:
@@ -907,6 +972,171 @@ class NewFaceVisionEngine:
         if parsed != parsed:
             return None
         return round(parsed, 4)
+
+    def _compute_info(self) -> dict[str, Any]:
+        deps_ok, deps_details = self._ensure_model_dependencies()
+        torch_version = getattr(torch, "__version__", None) if torch is not None else None
+        cuda_version = getattr(getattr(torch, "version", None), "cuda", None) if torch is not None else None
+        cuda_available = bool(torch is not None and torch.cuda.is_available())
+        device_count = 0
+        device_name = ""
+        if cuda_available:
+            try:
+                device_count = int(torch.cuda.device_count())
+                if device_count:
+                    device_name = str(torch.cuda.get_device_name(0))
+            except Exception:
+                device_count = 0
+                device_name = ""
+        mode = "GPU" if cuda_available else "CPU"
+        description = device_name if device_name else ("CUDA unavailable" if deps_ok else "torch unavailable")
+        return {
+            "mode": mode,
+            "device": self._device,
+            "description": description,
+            "cuda_available": cuda_available,
+            "device_count": device_count,
+            "device_name": device_name,
+            "torch": torch_version,
+            "cuda": cuda_version,
+            "details": deps_details,
+        }
+
+    def _count_cache_files(self) -> int:
+        try:
+            return sum(1 for path in self.cache_dir.glob("*.json") if path.is_file())
+        except Exception:
+            return 0
+
+    def _remember_prediction(self, cache_key: str, result: Mapping[str, Any]) -> None:
+        if len(self._prediction_cache) >= 100:
+            self._prediction_cache.pop(next(iter(self._prediction_cache)), None)
+        self._prediction_cache[cache_key] = dict(result)
+
+    def _load_cached_result(self, cache_key: str) -> dict[str, Any] | None:
+        path = self._cache_path(cache_key)
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            _log.warning("failed to read prediction cache %s: %s", path, exc)
+            return None
+        if not isinstance(payload, Mapping):
+            return None
+        result = payload.get("result") if isinstance(payload.get("result"), Mapping) else payload
+        if not isinstance(result, Mapping) or not result.get("ok"):
+            return None
+        return dict(result)
+
+    def _store_cached_result(self, cache_key: str, result: Mapping[str, Any]) -> None:
+        if not result.get("ok"):
+            return
+        try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "schema": "new_face_vision.prediction_cache.v1",
+                "cache_key": cache_key,
+                "created_at": time.time(),
+                "result": dict(result),
+            }
+            path = self._cache_path(cache_key)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str), encoding="utf-8")
+            os.replace(tmp, path)
+        except Exception as exc:
+            _log.warning("failed to store prediction cache %s: %s", cache_key, exc)
+
+    def _cache_path(self, cache_key: str) -> Path:
+        safe_key = "".join(ch for ch in cache_key if ch.isalnum() or ch in {"-", "_"})[:96]
+        return self.cache_dir / f"{safe_key}.json"
+
+    def _result_cache_key(
+        self,
+        *,
+        frame_idx: int,
+        frame_key: str,
+        frame_path: Path,
+        mask_path: Path | None,
+        true_ratio: Any,
+    ) -> str:
+        payload = {
+            "schema": "new_face_vision.prediction_cache.v1",
+            "threshold": self._threshold,
+            "model": self._model_signature(),
+            "frame": {
+                "idx": frame_idx,
+                "key": frame_key,
+                "file": self._file_signature(frame_path),
+            },
+            "mask": self._file_signature(mask_path) if mask_path else None,
+            "true_ratio": self._round_optional(true_ratio),
+        }
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def _model_signature(self) -> dict[str, Any]:
+        if self._model_path:
+            return {
+                "kind": "torch",
+                "file": self._file_signature(Path(self._model_path)),
+            }
+        return {"kind": "dummy", "file": None}
+
+    def _file_signature(self, path: Path | None) -> dict[str, Any] | None:
+        if path is None:
+            return None
+        file_path = Path(path)
+        try:
+            stat = file_path.stat()
+        except Exception:
+            return {"path": str(file_path), "exists": False}
+        return {
+            "path": str(file_path),
+            "name": file_path.name,
+            "size_bytes": stat.st_size,
+            "modified_ns": stat.st_mtime_ns,
+        }
+
+    def _mask_path_for_frame(self, frame_key: str) -> Path | None:
+        if frame_key in self._masks:
+            return self._masks[frame_key]
+        for key, path in self._masks.items():
+            if frame_key in key or key in frame_key:
+                return path
+        return None
+
+    def _record_result_row(self, recorded: Mapping[str, Any]) -> None:
+        if not recorded.get("ok"):
+            return
+        metrics = recorded.get("metrics") if isinstance(recorded.get("metrics"), Mapping) else {}
+        frame_idx = int(recorded.get("frame_idx") or 0)
+        total_frames = int(recorded.get("total_frames") or len(self._frames) or 0)
+        self._result_rows[str(frame_idx)] = {
+            "id": recorded.get("id"),
+            "frame_idx": frame_idx,
+            "frame_label": self._frame_label(frame_idx, total_frames),
+            "frame_key": recorded.get("frame_key"),
+            "pred_ratio": recorded.get("pred_ratio"),
+            "true_ratio": recorded.get("true_ratio"),
+            "dice": metrics.get("dice"),
+            "iou": metrics.get("iou"),
+            "status": recorded.get("status"),
+            "cached": bool(recorded.get("cached")),
+            "navigation": bool(recorded.get("navigation")),
+            "seq": recorded.get("seq"),
+            "run_id": recorded.get("run_id"),
+            "ts": time.time(),
+        }
+
+    def _history_rows(self) -> list[dict[str, Any]]:
+        def sort_key(item: tuple[str, dict[str, Any]]) -> int:
+            try:
+                return int(item[1].get("frame_idx"))
+            except Exception:
+                return 0
+
+        return [dict(row) for _, row in sorted(self._result_rows.items(), key=sort_key)]
 
     def _infer_upload_root(self) -> Path | None:
         for key in ("ADAOS_SKILL_ENV_PATH", "ADAOS_SKILL_MEMORY_PATH"):

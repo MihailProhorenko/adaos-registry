@@ -199,6 +199,62 @@
               }
             },
             {
+              "id": "newface_modal_ratio_chart",
+              "type": "visual.timeseriesChart",
+              "area": "main",
+              "title": "Bad ratio",
+              "dataSource": {
+                "kind": "stream",
+                "receiver": "newface_vision_metrics"
+              },
+              "inputs": {
+                "xKey": "seq",
+                "yKey": "series.pred_ratio",
+                "emptyText": "No metric points",
+                "showValues": false,
+                "showTable": false,
+                "layoutGroup": "newface-charts",
+                "detailsModalId": "newface_metrics_modal"
+              },
+              "actions": [
+                {
+                  "on": "click",
+                  "type": "openModal",
+                  "params": {
+                    "modalId": "newface_metrics_modal"
+                  }
+                }
+              ]
+            },
+            {
+              "id": "newface_modal_metrics_chart",
+              "type": "visual.timeseriesChart",
+              "area": "main",
+              "title": "Dice",
+              "dataSource": {
+                "kind": "stream",
+                "receiver": "newface_vision_metrics"
+              },
+              "inputs": {
+                "xKey": "seq",
+                "yKey": "series.dice",
+                "emptyText": "No metric points",
+                "showValues": false,
+                "showTable": false,
+                "layoutGroup": "newface-charts",
+                "detailsModalId": "newface_metrics_modal"
+              },
+              "actions": [
+                {
+                  "on": "click",
+                  "type": "openModal",
+                  "params": {
+                    "modalId": "newface_metrics_modal"
+                  }
+                }
+              ]
+            },
+            {
               "id": "newface_modal_controls",
               "type": "input.commandBar",
               "area": "main",
@@ -315,6 +371,21 @@
               }
             },
             {
+              "id": "newface_modal_compute",
+              "type": "visual.metricTile",
+              "area": "right",
+              "title": "Compute",
+              "dataSource": {
+                "kind": "y",
+                "path": "data/new_face_vision/current/compute"
+              },
+              "inputs": {
+                "valuePath": "mode",
+                "descriptionPath": "description",
+                "emptyText": "CPU"
+              }
+            },
+            {
               "id": "newface_modal_dice",
               "type": "visual.metricTile",
               "area": "right",
@@ -326,36 +397,6 @@
               "inputs": {
                 "valuePath": "avg_dice",
                 "emptyText": "--"
-              }
-            },
-            {
-              "id": "newface_modal_ratio_chart",
-              "type": "visual.timeseriesChart",
-              "area": "bottom",
-              "title": "Bad ratio",
-              "dataSource": {
-                "kind": "stream",
-                "receiver": "newface_vision_metrics"
-              },
-              "inputs": {
-                "xKey": "seq",
-                "yKey": "series.pred_ratio",
-                "emptyText": "No metric points"
-              }
-            },
-            {
-              "id": "newface_modal_metrics_chart",
-              "type": "visual.timeseriesChart",
-              "area": "bottom",
-              "title": "Dice",
-              "dataSource": {
-                "kind": "stream",
-                "receiver": "newface_vision_metrics"
-              },
-              "inputs": {
-                "xKey": "seq",
-                "yKey": "series.dice",
-                "emptyText": "No metric points"
               }
             }
           ]
@@ -493,6 +534,74 @@
             }
           ]
         }
+      },
+      "newface_metrics_modal": {
+        "title": "Frame metrics",
+        "presentation": {
+          "kind": "modal"
+        },
+        "schema": {
+          "id": "newface_metrics_modal",
+          "layout": {
+            "type": "single",
+            "pattern": "stack",
+            "areas": [
+              {
+                "id": "main",
+                "role": "main"
+              }
+            ]
+          },
+          "widgets": [
+            {
+              "id": "newface_metrics_table",
+              "type": "ui.table",
+              "area": "main",
+              "title": "Metrics",
+              "dataSource": {
+                "kind": "y",
+                "path": "data/new_face_vision/history"
+              },
+              "inputs": {
+                "emptyText": "No results yet",
+                "columns": [
+                  {
+                    "key": "frame_label",
+                    "label": "Frame"
+                  },
+                  {
+                    "key": "frame_key",
+                    "label": "Key"
+                  },
+                  {
+                    "key": "pred_ratio",
+                    "label": "Pred"
+                  },
+                  {
+                    "key": "true_ratio",
+                    "label": "True"
+                  },
+                  {
+                    "key": "dice",
+                    "label": "Dice"
+                  },
+                  {
+                    "key": "iou",
+                    "label": "IoU"
+                  },
+                  {
+                    "key": "status",
+                    "label": "Status"
+                  },
+                  {
+                    "key": "cached",
+                    "label": "Cached"
+                  }
+                ]
+              }
+            }
+          ]
+        }
       }
     },
     "widgets": {}
@@ -519,6 +628,16 @@
         "path": null,
         "device": null
       },
+      "compute": {
+        "mode": "CPU",
+        "device": "cpu",
+        "description": "CUDA unavailable",
+        "cuda_available": false,
+        "device_count": 0,
+        "device_name": "",
+        "torch": null,
+        "cuda": null
+      },
       "stats": {
         "total_frames": 0,
         "loaded_masks": 0,
@@ -530,7 +649,16 @@
         "avg_dice": null,
         "avg_iou": null,
         "fps": 5,
-        "run_id": 1
+        "run_id": 1,
+        "cached_results": 0,
+        "cache_hits": 0,
+        "cache_misses": 0
+      },
+      "cache": {
+        "memory_entries": 0,
+        "disk_entries": 0,
+        "hits": 0,
+        "misses": 0
       },
       "playback": {
         "mode": "idle",

@@ -157,16 +157,19 @@ def _project(webspace_id: str | None = None) -> None:
     selected_webspace = str(webspace_id or default_webspace_id()).strip() or default_webspace_id()
     with _ENGINE_LOCK:
         snapshot = _engine_instance().snapshot()
+    history = list(snapshot.get("history") or [])
+    current_snapshot = dict(snapshot)
+    current_snapshot["history"] = []
     pushed = False
     try:
         try:
             pushed = bool(set_current_skill(SKILL_NAME))
         except Exception:
             pushed = False
-        _set_projection_if_changed("new_face_vision.current", snapshot, webspace_id=selected_webspace)
+        _set_projection_if_changed("new_face_vision.current", current_snapshot, webspace_id=selected_webspace)
         _set_projection_if_changed(
             "new_face_vision.history",
-            list(snapshot.get("history") or []),
+            history,
             webspace_id=selected_webspace,
         )
     except Exception:
@@ -210,6 +213,15 @@ def _publish_stream(receiver: str, data: Any, *, webspace_id: str | None = None,
 def _remember_frame_payload(webspace_id: str | None, payload: dict[str, Any]) -> None:
     selected_webspace = str(webspace_id or default_webspace_id()).strip() or default_webspace_id()
     _last_frame_payload_by_webspace[selected_webspace] = dict(payload)
+
+
+def _republish_last_frame(webspace_id: str | None) -> bool:
+    selected_webspace = str(webspace_id or default_webspace_id()).strip() or default_webspace_id()
+    payload = _last_frame_payload_by_webspace.get(selected_webspace)
+    if not payload:
+        return False
+    _publish_stream(FRAME_RECEIVER, payload, webspace_id=selected_webspace, force=True)
+    return True
 
 
 def _remember_metrics_payload(webspace_id: str | None, payload: dict[str, Any]) -> None:
@@ -299,6 +311,7 @@ def _playback_loop(webspace_id: str, fps: float, stop: threading.Event) -> None:
     interval = max(0.03, 1.0 / max(0.5, fps))
     while not stop.is_set():
         try:
+            _republish_last_frame(webspace_id)
             with _ENGINE_LOCK:
                 engine = _engine_instance()
                 snapshot = engine.snapshot()
@@ -592,6 +605,7 @@ def new_face_vision_process_frame(
     **_: Any,
 ) -> dict[str, Any]:
     try:
+        _republish_last_frame(webspace_id)
         with _ENGINE_LOCK:
             engine = _engine_instance()
             result = engine.process_frame(frame_idx)
@@ -617,6 +631,7 @@ def new_face_vision_step_forward(webspace_id: str | None = None, **_: Any) -> di
 @tool("new_face_vision_step_back")
 def new_face_vision_step_back(webspace_id: str | None = None, **_: Any) -> dict[str, Any]:
     try:
+        _republish_last_frame(webspace_id)
         with _ENGINE_LOCK:
             engine = _engine_instance()
             result = engine.process_relative_frame(-1)
@@ -637,9 +652,9 @@ def new_face_vision_play(fps: float | None = None, webspace_id: str | None = Non
         with _ENGINE_LOCK:
             result = _engine_instance().set_playback("playing", fps=selected_fps)
         _last_playback_project_at_by_webspace.pop(selected_webspace, None)
-        _project(webspace_id=selected_webspace)
+        response = _result_with_snapshot(result, webspace_id=selected_webspace)
         _start_playback_thread(webspace_id=selected_webspace, fps=selected_fps)
-        return _result_with_snapshot(result, webspace_id=selected_webspace)
+        return response
     except Exception as exc:
         return _handle_error(exc, webspace_id=webspace_id)
 
@@ -663,8 +678,9 @@ def new_face_vision_stop(webspace_id: str | None = None, **_: Any) -> dict[str, 
             engine = _engine_instance()
             result = engine.stop()
             empty_frame = engine.empty_frame_stream_payload(label="Stopped")
-        _remember_frame_payload(webspace_id, empty_frame)
-        _publish_stream(FRAME_RECEIVER, empty_frame, webspace_id=webspace_id, force=True)
+        if not _republish_last_frame(webspace_id):
+            _remember_frame_payload(webspace_id, empty_frame)
+            _publish_stream(FRAME_RECEIVER, empty_frame, webspace_id=webspace_id, force=True)
         return _result_with_snapshot(result, webspace_id=webspace_id)
     except Exception as exc:
         return _handle_error(exc, webspace_id=webspace_id)
@@ -680,9 +696,9 @@ def new_face_vision_replay(fps: float | None = None, webspace_id: str | None = N
         _last_playback_project_at_by_webspace.pop(selected_webspace, None)
         with _ENGINE_LOCK:
             result = _engine_instance().replay(fps=selected_fps)
-        _project(webspace_id=selected_webspace)
+        response = _result_with_snapshot(result, webspace_id=selected_webspace)
         _start_playback_thread(webspace_id=selected_webspace, fps=selected_fps)
-        return _result_with_snapshot(result, webspace_id=selected_webspace)
+        return response
     except Exception as exc:
         return _handle_error(exc, webspace_id=webspace_id)
 
