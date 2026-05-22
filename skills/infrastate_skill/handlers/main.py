@@ -3907,6 +3907,22 @@ def _member_connection_items(reliability: dict[str, Any]) -> list[dict[str, Any]
     return items
 
 
+def _member_effective_connected(member: dict[str, Any]) -> bool:
+    if bool(member.get("connected")):
+        return True
+    state = str(member.get("state") or "").strip().lower()
+    if state in {"connected", "online", "ready"}:
+        return True
+    snapshot = member.get("node_snapshot") if isinstance(member.get("node_snapshot"), dict) else {}
+    try:
+        last_seen_ago_s = float(member.get("last_seen_ago_s"))
+    except Exception:
+        last_seen_ago_s = None
+    if last_seen_ago_s is not None and last_seen_ago_s <= 90.0:
+        return bool(snapshot.get("connected_to_subnet") or snapshot.get("connected_to_hub") or snapshot.get("ready"))
+    return False
+
+
 def _node_label(node_names: Any, *, fallback: str) -> str:
     if isinstance(node_names, list):
         for item in node_names:
@@ -3959,7 +3975,7 @@ def _node_tabs(conf, ui_state: dict[str, Any], reliability: dict[str, Any]) -> t
             if not node_id:
                 continue
             member_names = member.get("node_names") if isinstance(member.get("node_names"), list) else []
-            connected = bool(member.get("connected"))
+            connected = _member_effective_connected(member)
             observed_via = str(member.get("observed_via") or "").strip()
             member_state = str(member.get("state") or ("connected" if connected else "offline")).strip().lower()
             node_status = "online" if connected or member_state in {"online", "connected", "ready"} else "offline"
@@ -4098,7 +4114,7 @@ def _remote_status_payload(snapshot: dict[str, Any], member: dict[str, Any]) -> 
     phase = str(update.get("phase") or member.get("snapshot_update_phase") or "")
     message = str(update.get("message") or "")
     snapshot_state = str(member.get("snapshot_state") or "").strip().lower()
-    connected = bool(member.get("connected"))
+    connected = _member_effective_connected(member)
     if (
         (not connected or snapshot_state in {"stale", "aging", "pending"})
         and str(state or "").strip().lower() in {"planned", "countdown", "draining", "stopping", "restarting", "applying", "validate", "validated"}
@@ -5612,7 +5628,7 @@ def _summary(
             selected_member,
         )
         summary_label = "Node state"
-        remote_connected = bool(selected_member.get("connected"))
+        remote_connected = _member_effective_connected(selected_member)
         remote_state = str(status.get("state") or lifecycle.get("node_state") or selected_member.get("state") or "connected")
         summary_value = "Offline" if not remote_connected or remote_state.strip().lower() == "offline" else remote_state
         build_ref = _core_slot_summary_subtitle(slots_payload, build, active_slot=active)
@@ -5743,7 +5759,7 @@ def _action_items(status: dict[str, Any], ui_state: dict[str, Any], reliability:
     if selected_node_id and selected_node_id != local_node_id:
         member = _selected_member_entry(reliability, selected_node_id)
         snapshot = member.get("node_snapshot") if isinstance(member.get("node_snapshot"), dict) else {}
-        connected = bool(member.get("connected"))
+        connected = _member_effective_connected(member)
         observed_via = str(member.get("observed_via") or "").strip()
         if not connected:
             last_seen_ago = member.get("last_seen_ago_s")
