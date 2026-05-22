@@ -597,7 +597,7 @@
 										"width": "100px",
 										"buttons": []
 									},
-									{ "key": "runtime_display", "label": "Runtime", "mono": true, "width": "120px" },
+									{ "key": "installed_display", "label": "Installed", "mono": true, "width": "120px" },
 									{
 										"key": "_runtime_actions",
 										"label": "Actions",

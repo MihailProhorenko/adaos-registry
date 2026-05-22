@@ -1964,6 +1964,12 @@ def _version_status(
 ) -> dict[str, Any]:
     statuses: list[dict[str, str]] = []
     kind_label = str(artifact_kind or "artifact").strip() or "artifact"
+    active_label = "Installed version" if kind_label == "scenario" else "Active runtime"
+    inactive_text = (
+        f"{kind_label} is not installed."
+        if kind_label == "scenario"
+        else f"{kind_label} has no active runtime slot."
+    )
     catalog_source = str(catalog_source or "").strip()
     catalog_state = str(catalog_state or "").strip()
 
@@ -1972,7 +1978,7 @@ def _version_status(
             {
                 "code": "runtime_inactive",
                 "icon": "alert-circle-outline",
-                "tooltip": f"{kind_label} has no active runtime slot.",
+                "tooltip": inactive_text,
             }
         )
 
@@ -2010,7 +2016,7 @@ def _version_status(
             {
                 "code": "behind_catalog",
                 "icon": "cloud-download-outline",
-                "tooltip": f"Active runtime {active_version or 'unknown'} is behind catalog {catalog_version}.",
+                "tooltip": f"{active_label} {active_version or 'unknown'} is behind catalog {catalog_version}.",
             }
         )
     elif catalog_active == "older":
@@ -2018,7 +2024,7 @@ def _version_status(
             {
                 "code": "ahead_of_catalog",
                 "icon": "cloud-upload-outline",
-                "tooltip": f"Active runtime {active_version or 'unknown'} is ahead of catalog {catalog_version}.",
+                "tooltip": f"{active_label} {active_version or 'unknown'} is ahead of catalog {catalog_version}.",
             }
         )
     elif catalog_active == "differs":
@@ -2026,7 +2032,7 @@ def _version_status(
             {
                 "code": "active_catalog_differs",
                 "icon": "git-compare-outline",
-                "tooltip": f"Active runtime {active_version or 'unknown'} differs from catalog {catalog_version}.",
+                "tooltip": f"{active_label} {active_version or 'unknown'} differs from catalog {catalog_version}.",
             }
         )
 
@@ -2046,7 +2052,7 @@ def _version_status(
             {
                 "code": "workspace_runtime_differs",
                 "icon": "layers-outline",
-                "tooltip": f"Workspace source {workspace_source_version} differs from active runtime {active_version}.",
+                "tooltip": f"Workspace source {workspace_source_version} differs from {active_label.lower()} {active_version}.",
             }
         )
 
@@ -2613,6 +2619,7 @@ def _scenario_items(*, include_all: bool = True, operations: dict[str, Any] | No
             "catalog_state": catalog_state,
             "catalog_display": catalog_version or "unknown",
             "workspace_display": workspace_source_version or "unknown",
+            "installed_display": active_version or "none",
             "runtime_display": active_version or "none",
             "runtime_bucket": "",
             "remote_version": catalog_version,
