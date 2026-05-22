@@ -3302,6 +3302,9 @@ def _git_text(*args: str) -> str:
 
 def _build_meta() -> dict[str, Any]:
     active_manifest = active_slot_manifest() or {}
+    runtime_build_version = str(active_manifest.get("build_version") or "").strip()
+    runtime_base_version = str(active_manifest.get("base_version") or "").strip()
+    runtime_target_version = str(active_manifest.get("target_version") or "").strip()
     return {
         "version": BUILD_INFO.version,
         "build_date": BUILD_INFO.build_date,
@@ -3310,12 +3313,91 @@ def _build_meta() -> dict[str, Any]:
         "git_branch": _git_text("rev-parse", "--abbrev-ref", "HEAD"),
         "git_subject": _git_text("show", "-s", "--format=%s", "HEAD"),
         "repo_root": str(_repo_root() or ""),
-        "runtime_version": str(active_manifest.get("target_version") or ""),
+        "runtime_version": runtime_build_version or runtime_base_version or BUILD_INFO.version or runtime_target_version,
+        "runtime_base_version": runtime_base_version,
+        "runtime_build_version": runtime_build_version or BUILD_INFO.version,
+        "runtime_target_version": runtime_target_version,
         "runtime_git_commit": str(active_manifest.get("git_commit") or ""),
         "runtime_git_short_commit": str(active_manifest.get("git_short_commit") or ""),
         "runtime_git_branch": str(active_manifest.get("git_branch") or active_manifest.get("target_rev") or ""),
         "runtime_git_subject": str(active_manifest.get("git_subject") or ""),
     }
+
+
+def _core_version_label(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    public, _, _local = text.partition("+")
+    return public.strip() or text
+
+
+def _core_slot_manifest(slots_payload: dict[str, Any], active_slot: str | None = None) -> dict[str, Any]:
+    active = str(active_slot or slots_payload.get("active_slot") or "").strip()
+    lookup_active = active.upper()
+    manifest = slots_payload.get("active_manifest") if isinstance(slots_payload.get("active_manifest"), dict) else {}
+    raw_slots = slots_payload.get("slots") if isinstance(slots_payload.get("slots"), dict) else {}
+    slot_meta = (raw_slots.get(active) or raw_slots.get(lookup_active)) if active else {}
+    slot_manifest = slot_meta.get("manifest") if isinstance(slot_meta, dict) and isinstance(slot_meta.get("manifest"), dict) else {}
+    merged = dict(slot_manifest)
+    merged.update(manifest)
+    if active:
+        merged.setdefault("slot", active)
+    return merged
+
+
+def _core_slot_version(manifest: dict[str, Any], build: dict[str, Any]) -> str:
+    for value in (
+        manifest.get("build_version"),
+        manifest.get("base_version"),
+        build.get("runtime_build_version"),
+        build.get("runtime_base_version"),
+        build.get("runtime_version"),
+        build.get("version"),
+        manifest.get("target_version"),
+    ):
+        label = _core_version_label(value)
+        if label:
+            return label
+    return ""
+
+
+def _core_slot_commit(manifest: dict[str, Any], build: dict[str, Any]) -> str:
+    for value in (
+        manifest.get("git_short_commit"),
+        manifest.get("git_commit"),
+        build.get("runtime_git_short_commit"),
+        build.get("runtime_git_commit"),
+        build.get("git_short_sha"),
+        build.get("git_sha"),
+        manifest.get("target_rev"),
+    ):
+        text = str(value or "").strip()
+        if text:
+            return text[:7] if len(text) >= 40 and all(ch in "0123456789abcdefABCDEF" for ch in text) else text
+    return ""
+
+
+def _core_slot_summary_subtitle(
+    slots_payload: dict[str, Any],
+    build: dict[str, Any],
+    *,
+    active_slot: str | None = None,
+) -> str:
+    active = str(active_slot or slots_payload.get("active_slot") or "").strip()
+    if not active:
+        active = "--"
+    manifest = _core_slot_manifest(slots_payload, active)
+    parts = [f"slot {active}"]
+    version = _core_slot_version(manifest, build)
+    commit = _core_slot_commit(manifest, build)
+    if version:
+        parts.append(version)
+    if commit:
+        parts.append(commit)
+    if len(parts) == 1:
+        parts.append("unknown")
+    return " | ".join(parts)
 
 
 def _validated_runtime_source(status: dict[str, Any], last_result: dict[str, Any]) -> dict[str, Any]:
@@ -3374,7 +3456,18 @@ def _effective_runtime_projection(
     effective_slots["active_manifest"] = merged_manifest
 
     effective_build = dict(build or {})
-    effective_build["runtime_version"] = str(merged_manifest.get("target_version") or effective_build.get("runtime_version") or "")
+    runtime_build_version = str(merged_manifest.get("build_version") or effective_build.get("runtime_build_version") or "").strip()
+    runtime_base_version = str(merged_manifest.get("base_version") or effective_build.get("runtime_base_version") or "").strip()
+    runtime_target_version = str(
+        merged_manifest.get("target_version")
+        or effective_build.get("runtime_target_version")
+        or effective_build.get("runtime_version")
+        or ""
+    ).strip()
+    effective_build["runtime_build_version"] = runtime_build_version
+    effective_build["runtime_base_version"] = runtime_base_version
+    effective_build["runtime_target_version"] = runtime_target_version
+    effective_build["runtime_version"] = runtime_build_version or runtime_base_version or str(effective_build.get("runtime_version") or runtime_target_version or "")
     effective_build["runtime_git_commit"] = str(merged_manifest.get("git_commit") or effective_build.get("runtime_git_commit") or "")
     effective_build["runtime_git_short_commit"] = str(
         merged_manifest.get("git_short_commit") or effective_build.get("runtime_git_short_commit") or ""
@@ -3861,6 +3954,9 @@ def _selected_member_entry(reliability: dict[str, Any], node_id: str) -> dict[st
 
 def _remote_build_meta(snapshot: dict[str, Any]) -> dict[str, Any]:
     build = snapshot.get("build") if isinstance(snapshot.get("build"), dict) else {}
+    runtime_build_version = str(build.get("runtime_build_version") or "").strip()
+    runtime_base_version = str(build.get("runtime_base_version") or "").strip()
+    runtime_target_version = str(build.get("runtime_target_version") or build.get("runtime_version") or "").strip()
     return {
         "version": str(build.get("version") or "unknown"),
         "build_date": str(build.get("build_date") or ""),
@@ -3869,7 +3965,10 @@ def _remote_build_meta(snapshot: dict[str, Any]) -> dict[str, Any]:
         "git_branch": "",
         "git_subject": "",
         "repo_root": "",
-        "runtime_version": str(build.get("runtime_version") or build.get("version") or "unknown"),
+        "runtime_version": runtime_build_version or runtime_base_version or str(build.get("runtime_version") or build.get("version") or "unknown"),
+        "runtime_base_version": runtime_base_version,
+        "runtime_build_version": runtime_build_version or str(build.get("version") or ""),
+        "runtime_target_version": runtime_target_version,
         "runtime_git_commit": str(build.get("runtime_git_commit") or ""),
         "runtime_git_short_commit": str(build.get("runtime_git_short_commit") or ""),
         "runtime_git_branch": str(build.get("runtime_git_branch") or ""),
@@ -3935,6 +4034,8 @@ def _remote_slots_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
                 "slot": str(active_manifest.get("slot") or active_slot),
                 "target_rev": str(active_manifest.get("target_rev") or ""),
                 "target_version": str(active_manifest.get("target_version") or ""),
+                "base_version": str(active_manifest.get("base_version") or ""),
+                "build_version": str(active_manifest.get("build_version") or ""),
                 "git_commit": str(active_manifest.get("git_commit") or ""),
                 "git_short_commit": str(active_manifest.get("git_short_commit") or ""),
                 "git_branch": str(active_manifest.get("git_branch") or ""),
@@ -4443,6 +4544,8 @@ def _slot_items(slots_payload: dict[str, Any]) -> list[dict[str, Any]]:
     for slot_id, slot_meta in sorted(raw_slots.items()):
         meta = slot_meta if isinstance(slot_meta, dict) else {}
         manifest = meta.get("manifest") if isinstance(meta.get("manifest"), dict) else {}
+        version = _core_slot_version(manifest, {})
+        commit = _core_slot_commit(manifest, {})
         badges: list[str] = []
         if slot_id == active:
             badges.append("active")
@@ -4453,10 +4556,13 @@ def _slot_items(slots_payload: dict[str, Any]) -> list[dict[str, Any]]:
                 "id": str(slot_id),
                 "title": f"Slot {slot_id}",
                 "status": "ok" if slot_id == active else "idle",
-                "subtitle": str(manifest.get("git_short_commit") or manifest.get("target_rev") or manifest.get("target_version") or "empty"),
+                "subtitle": " | ".join([part for part in (version, commit) if part]) or str(manifest.get("target_rev") or "empty"),
                 "description": str(meta.get("path") or ""),
-                "version": str(manifest.get("target_version") or ""),
+                "version": version,
                 "target_rev": str(manifest.get("target_rev") or ""),
+                "target_version": str(manifest.get("target_version") or ""),
+                "base_version": str(manifest.get("base_version") or ""),
+                "build_version": str(manifest.get("build_version") or ""),
                 "git_commit": str(manifest.get("git_commit") or ""),
                 "git_short_commit": str(manifest.get("git_short_commit") or ""),
                 "git_branch": str(manifest.get("git_branch") or ""),
@@ -5382,7 +5488,7 @@ def _summary(
     )
     summary_label = "Core update"
     summary_value = state
-    summary_subtitle = f"slot {active} | {build.get('runtime_git_short_commit') or build.get('git_short_sha') or build.get('version') or 'unknown'}"
+    summary_subtitle = _core_slot_summary_subtitle(slots_payload, build, active_slot=active)
     selected_member = selected_member if isinstance(selected_member, dict) else {}
     if selected_kind != "local":
         remote_control = _remote_control_payload(
@@ -5393,7 +5499,7 @@ def _summary(
         remote_connected = bool(selected_member.get("connected"))
         remote_state = str(status.get("state") or lifecycle.get("node_state") or selected_member.get("state") or "connected")
         summary_value = "Offline" if not remote_connected or remote_state.strip().lower() == "offline" else remote_state
-        build_ref = str(build.get("runtime_git_short_commit") or build.get("runtime_version") or build.get("version") or "").strip()
+        build_ref = _core_slot_summary_subtitle(slots_payload, build, active_slot=active)
         selected_compact = str(selected_node.get("node_compact_label") or "").strip()
         summary_subtitle = f"{selected_label} | {selected_compact or 'N?'}"
         if build_ref:
