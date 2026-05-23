@@ -1576,6 +1576,16 @@ class NewFaceVisionEngine:
         return len(restored)
 
     def _load_model_weights(self, path: str) -> dict[str, Any]:
+        if not os.path.exists(path):
+            return {
+                "ok": False,
+                "code": "file_not_found",
+                "message": f"Model file not found: {path}",
+            }
+        validation_error = self._validate_model_file(path)
+        if validation_error is not None:
+            return validation_error
+
         deps_ok, deps_details = self._ensure_model_dependencies()
         if not deps_ok:
             return {
@@ -1585,15 +1595,8 @@ class NewFaceVisionEngine:
                 "details": deps_details,
             }
 
-        if not os.path.exists(path):
-            return {
-                "ok": False,
-                "code": "file_not_found",
-                "message": f"Model file not found: {path}",
-            }
-
         try:
-            checkpoint = torch.load(path, map_location=self._device)
+            checkpoint = self._load_torch_checkpoint(path)
 
             model = torchvision.models.segmentation.deeplabv3_resnet50(
                 weights=None,
@@ -1618,6 +1621,53 @@ class NewFaceVisionEngine:
                 "code": "load_model_failed",
                 "message": str(exc),
             }
+
+    def _validate_model_file(self, path: str) -> dict[str, Any] | None:
+        model_path = Path(path)
+        try:
+            size = model_path.stat().st_size
+            with model_path.open("rb") as handle:
+                prefix = handle.read(64).lstrip()
+        except OSError as exc:
+            return {
+                "ok": False,
+                "code": "file_not_readable",
+                "message": f"Model file is not readable: {exc}",
+            }
+        if size < 1024:
+            return {
+                "ok": False,
+                "code": "invalid_model_file",
+                "message": f"Model file is too small to be a PyTorch checkpoint: {size} bytes",
+                "details": {"path": str(model_path), "size_bytes": size},
+            }
+        if prefix.startswith((b"{", b"[", b"<", b"<!")):
+            return {
+                "ok": False,
+                "code": "invalid_model_file",
+                "message": "Model file looks like text/JSON/HTML, not a PyTorch checkpoint",
+                "details": {
+                    "path": str(model_path),
+                    "size_bytes": size,
+                    "prefix": prefix[:32].decode("utf-8", errors="replace"),
+                },
+            }
+        return None
+
+    def _load_torch_checkpoint(self, path: str) -> Any:
+        try:
+            return torch.load(path, map_location=self._device, weights_only=True)
+        except TypeError:
+            return torch.load(path, map_location=self._device)
+        except Exception as exc:
+            message = str(exc)
+            if "Weights only load failed" not in message and "Unsupported operand" not in message:
+                raise
+            _log.warning(
+                "Retrying trusted PyTorch checkpoint load with weights_only=False after weights-only failure: %s",
+                message,
+            )
+            return torch.load(path, map_location=self._device, weights_only=False)
 
     def _ensure_image_dependencies(self) -> tuple[bool, dict[str, str]]:
         global Image, np, _numpy_import_error, _pillow_import_error
