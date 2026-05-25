@@ -1,13 +1,27 @@
 name: media_indexer_skill
-version: 0.1.1
+version: 0.1.3
 description: Semantic indexing and multimodal search for local media files (video,
   audio, images) using NER, FAISS and CLIP.
 runtime:
   python: '3.11'
-dependencies: []
+dependencies:
+- cinemagoer==2023.5.1
+- easyocr==1.7.2
+- faiss-cpu==1.13.2
+- ffmpeg-python==0.2.0
+- gdown>=5.0
+- numpy==2.3.5
+- opencv-python-headless==4.13.0.92
+- pillow==12.1.1
+- sentence-transformers==5.2.0
+- shazamio==0.8.1
+- static_ffmpeg==3.0
+- torch==2.10.0
+- transformers==4.57.5
 events:
   subscribe:
   - media_indexer.action
+  - webio.stream.snapshot.requested
   publish: []
 data_projections:
 - scope: subnet
@@ -15,6 +29,73 @@ data_projections:
   targets:
   - backend: yjs
     path: data/media_indexer
+data_routes:
+- surface: modal:media_indexer.summary
+  route: yjs
+  projection_slot: media_indexer.snapshot
+  path: data/media_indexer/status
+  first_paint: compact ready state from webui defaults or last projected snapshot
+  recovery: Yjs replay restores latest compact status and form values
+  update_source:
+  - media_indexer.action
+  budget:
+    max_payload_bytes: 8192
+    max_publish_hz: 0.5
+    snapshot_policy: on_subscribe
+  guard_visibility:
+    degraded_state: status tile shows stale or error state
+    log: skill:media_indexer_skill.runtime
+    quarantine: true
+- surface: modal:media_indexer.results
+  route: yjs
+  projection_slot: media_indexer.snapshot
+  path: data/media_indexer/results
+  first_paint: empty bounded result list
+  recovery: latest bounded search result list is restored from Yjs
+  update_source:
+  - media_indexer.action
+  budget:
+    max_payload_bytes: 65536
+    max_publish_hz: 0.2
+    max_items: 20
+    snapshot_policy: on_subscribe
+  guard_visibility:
+    degraded_state: result list remains at last successful search
+    log: skill:media_indexer_skill.runtime
+    quarantine: true
+- surface: modal:media_indexer.operation_stream
+  route: stream
+  receiver: media_indexer.operations
+  first_paint: browser initial state until first operation event arrives
+  recovery: skill republishes latest bounded operation snapshot on stream subscribe
+  update_source:
+  - media_indexer.action
+  - webio.stream.snapshot.requested
+  budget:
+    max_payload_bytes: 4096
+    max_publish_hz: 1
+    snapshot_policy: on_subscribe
+  guard_visibility:
+    degraded_state: live operation tile falls back to Yjs status
+    log: skill:media_indexer_skill.runtime
+    quarantine: false
+memory_budget:
+  expected_rss_mb: 4096
+  caches:
+  - name: vector_index
+    route: skill-local
+    max_items: 50000
+    cleanup_hook: dispose
+  - name: model_cache
+    route: disk
+    max_items: 4
+    cleanup_hook: dispose
+  background_workers:
+    max_threads: 1
+    cleanup_hook: dispose
+lifecycle:
+  rehydrate: rehydrate
+  dispose: dispose
 default_tool: search_media
 tools:
 - name: scan_and_index
@@ -79,5 +160,43 @@ tools:
               type: string
             payload:
               type: object
-updated_at: '2026-05-25T19:36:10+00:00'
+- name: get_settings
+  entry: handlers.main:get_settings
+  description: Return persisted media indexer settings and index metadata
+  input_schema:
+    type: object
+    properties: {}
+  output_schema:
+    type: object
+    required:
+    - status
+    - settings
+    properties:
+      status:
+        type: string
+      settings:
+        type: object
+- name: rehydrate
+  entry: handlers.main:rehydrate
+  description: Rehydrate lightweight persisted state without loading ML models
+  input_schema:
+    type: object
+    properties: {}
+  output_schema:
+    type: object
+    properties:
+      status:
+        type: string
+- name: dispose
+  entry: handlers.main:dispose
+  description: Release in-memory ML models and indexes
+  input_schema:
+    type: object
+    properties: {}
+  output_schema:
+    type: object
+    properties:
+      status:
+        type: string
+updated_at: '2026-05-25T20:03:50+00:00'
 

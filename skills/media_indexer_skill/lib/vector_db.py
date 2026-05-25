@@ -1,124 +1,149 @@
-"""
-=============================================================================
-Модуль векторного поиска на базе FAISS и мультимодальных нейросетей.
+"""Vector search storage for media_indexer_skill.
 
-Тема ВКР: «Индексация медиаконтента и обогащение метаданных
-           с использованием интеллектуального анализа данных»
-
-Автор:  Феденко Никита Александрович
-Группа: ИД 23.1/Б3-22
-Год:    2026
-
-Описание:
-    Реализует двухканальный семантический поиск:
-        - text-индекс  (Sentence-Transformer MiniLM, мультиязычный)
-        - image-индекс (CLIP ViT-B/32 для визуального содержимого)
-
-    Для текстового канала используется распределённая модель
-    distiluse-base-multilingual-cased-v2, обеспечивающая корректную
-    обработку русскоязычных и англоязычных запросов в едином
-    эмбеддинг-пространстве.
-
-    Для визуального канала используется CLIP с мультиязычным
-    текстовым энкодером (clip-ViT-B-32-multilingual-v1), что
-    позволяет искать изображения по русскоязычным запросам.
-=============================================================================
+The module is intentionally import-light. FAISS, Pillow, and sentence-transformer
+models are loaded only when VectorDatabase is instantiated, so smoke imports do
+not download or allocate ML resources.
 """
 
+from __future__ import annotations
+
+import json
 import logging
-import numpy as np
 from pathlib import Path
-from PIL import Image
-from typing import Dict, List, Any
-
-import faiss
-from sentence_transformers import SentenceTransformer
+from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
 
 class VectorDatabase:
-    """Мультимодальная векторная база данных."""
+    """Multimodal FAISS index with text and image channels."""
 
-    # Минимальные пороги для попадания результата в выдачу
-    # (косинусное сходство, нормализованное в [0, 1] -> в проценты при выдаче)
-    TEXT_MIN_SIMILARITY = 0.10   # 10% — text-канал
-    IMAGE_MIN_SIMILARITY = 0.22  # 22% — image-канал (CLIP даёт высокие значения)
+    TEXT_MODEL_NAME = "distiluse-base-multilingual-cased-v2"
+    CLIP_TEXT_MODEL_NAME = "clip-ViT-B-32-multilingual-v1"
+    CLIP_VISION_MODEL_NAME = "clip-ViT-B-32"
 
-    def __init__(self):
-        logger.info("Инициализация текстовой модели семантического поиска...")
-        self.text_model = SentenceTransformer('distiluse-base-multilingual-cased-v2')
+    TEXT_MIN_SIMILARITY = 0.10
+    IMAGE_MIN_SIMILARITY = 0.22
+    INDEX_DIMENSIONS = 512
+    SCHEMA_VERSION = 1
 
-        logger.info("Инициализация визуальной модели (CLIP)...")
-        self.clip_text = SentenceTransformer('clip-ViT-B-32-multilingual-v1')
-        self.clip_vision = SentenceTransformer('clip-ViT-B-32')
+    def __init__(self) -> None:
+        import faiss
+        from sentence_transformers import SentenceTransformer
 
-        self.text_index = faiss.IndexFlatIP(512)
-        self.image_index = faiss.IndexFlatIP(512)
+        self.faiss = faiss
+        logger.info("Loading text embedding model: %s", self.TEXT_MODEL_NAME)
+        self.text_model = SentenceTransformer(self.TEXT_MODEL_NAME)
 
-        self.text_docs: List[Dict] = []
-        self.image_docs: List[Dict] = []
-        logger.info("Векторные модели (FAISS + CLIP) успешно загружены.")
+        logger.info("Loading CLIP models: %s / %s", self.CLIP_TEXT_MODEL_NAME, self.CLIP_VISION_MODEL_NAME)
+        self.clip_text = SentenceTransformer(self.CLIP_TEXT_MODEL_NAME)
+        self.clip_vision = SentenceTransformer(self.CLIP_VISION_MODEL_NAME)
 
-    def add_text(self, text: str, payload: Dict):
+        self.text_index = self.faiss.IndexFlatIP(self.INDEX_DIMENSIONS)
+        self.image_index = self.faiss.IndexFlatIP(self.INDEX_DIMENSIONS)
+        self.text_docs: List[Dict[str, Any]] = []
+        self.image_docs: List[Dict[str, Any]] = []
+
+    @property
+    def counts(self) -> Dict[str, int]:
+        return {
+            "text_count": len(self.text_docs),
+            "image_count": len(self.image_docs),
+            "total_count": len(self.text_docs) + len(self.image_docs),
+        }
+
+    def add_text(self, text: str, payload: Dict[str, Any]) -> None:
+        import numpy as np
+
         if not text.strip():
             return
-        emb = self.text_model.encode(text, normalize_embeddings=True).astype('float32')
+        emb = self.text_model.encode(text, normalize_embeddings=True).astype("float32")
         self.text_index.add(np.array([emb]))
-        self.text_docs.append({'text': text, 'payload': payload})
+        self.text_docs.append({"text": text, "payload": payload})
 
-    def add_image(self, image_path: str, payload: Dict):
+    def add_image(self, image_path: str, payload: Dict[str, Any]) -> None:
         try:
-            img = Image.open(image_path)
-            emb = self.clip_vision.encode(img, normalize_embeddings=True).astype('float32')
+            import numpy as np
+            from PIL import Image
+
+            with Image.open(image_path) as img:
+                emb = self.clip_vision.encode(img, normalize_embeddings=True).astype("float32")
             self.image_index.add(np.array([emb]))
-            self.image_docs.append({
-                'text': f"[ВИЗУАЛ] {Path(image_path).name}",
-                'payload': payload
-            })
-        except Exception as e:
-            logger.warning(f"Ошибка CLIP при чтении {image_path}: {e}")
+            self.image_docs.append(
+                {
+                    "text": f"[VISUAL] {Path(image_path).name}",
+                    "payload": payload,
+                }
+            )
+        except Exception as exc:
+            logger.warning("CLIP failed to read %s: %s", image_path, exc)
 
-    def search(self, query: str, k: int = 5) -> List[Dict]:
-        """
-        Ищет файлы по смыслу запроса (сразу по тексту и по изображениям).
+    def search(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
+        import numpy as np
 
-        Возвращает объединённый список результатов, отсортированный
-        по убыванию сходства. Score выдаётся в процентах [0..100].
-        """
-        results = []
+        results: List[Dict[str, Any]] = []
 
-        # 1. Текстовый поиск
         if self.text_docs:
-            q_text_emb = self.text_model.encode(query, normalize_embeddings=True).astype('float32')
-            D_t, I_t = self.text_index.search(np.array([q_text_emb]), k)
-            for i, similarity in zip(I_t[0], D_t[0]):
-                if i == -1 or i >= len(self.text_docs):
+            q_text_emb = self.text_model.encode(query, normalize_embeddings=True).astype("float32")
+            distances, indexes = self.text_index.search(np.array([q_text_emb]), k)
+            for idx, similarity in zip(indexes[0], distances[0]):
+                if idx == -1 or idx >= len(self.text_docs):
                     continue
                 if similarity >= self.TEXT_MIN_SIMILARITY:
-                    score = round(float(similarity) * 100, 1)
-                    res = self.text_docs[i].copy()
-                    res['score'] = score
-                    res['type'] = '🎬 [МЕДИА/ТЕКСТ]'
-                    results.append(res)
+                    result = self.text_docs[idx].copy()
+                    result["score"] = round(float(similarity) * 100, 1)
+                    result["type"] = "media/text"
+                    results.append(result)
 
-        # 2. Визуальный поиск (CLIP по изображениям)
-        # Score выдаётся честный (без искусственного растягивания) —
-        # это позволяет text-каналу конкурировать с image-каналом.
         if self.image_docs:
-            q_img_emb = self.clip_text.encode(query, normalize_embeddings=True).astype('float32')
-            D_i, I_i = self.image_index.search(np.array([q_img_emb]), k)
-            for i, similarity in zip(I_i[0], D_i[0]):
-                if i == -1 or i >= len(self.image_docs):
+            q_img_emb = self.clip_text.encode(query, normalize_embeddings=True).astype("float32")
+            distances, indexes = self.image_index.search(np.array([q_img_emb]), k)
+            for idx, similarity in zip(indexes[0], distances[0]):
+                if idx == -1 or idx >= len(self.image_docs):
                     continue
-                raw_sim = float(similarity)
-                if raw_sim >= self.IMAGE_MIN_SIMILARITY:
-                    score = round(raw_sim * 100, 1)
-                    res = self.image_docs[i].copy()
-                    res['score'] = score
-                    res['type'] = '📸 [ФОТО]'
-                    results.append(res)
+                raw_similarity = float(similarity)
+                if raw_similarity >= self.IMAGE_MIN_SIMILARITY:
+                    result = self.image_docs[idx].copy()
+                    result["score"] = round(raw_similarity * 100, 1)
+                    result["type"] = "image"
+                    results.append(result)
 
-        # Сортируем все результаты по убыванию score
-        results.sort(key=lambda x: x['score'], reverse=True)
+        results.sort(key=lambda item: item["score"], reverse=True)
         return results[:k]
+
+    def save(self, directory: str | Path) -> Dict[str, Any]:
+        target = Path(directory)
+        target.mkdir(parents=True, exist_ok=True)
+        self.faiss.write_index(self.text_index, str(target / "text.index"))
+        self.faiss.write_index(self.image_index, str(target / "image.index"))
+        metadata = {
+            "schema": self.SCHEMA_VERSION,
+            "models": {
+                "text": self.TEXT_MODEL_NAME,
+                "clip_text": self.CLIP_TEXT_MODEL_NAME,
+                "clip_vision": self.CLIP_VISION_MODEL_NAME,
+            },
+            "text_docs": self.text_docs,
+            "image_docs": self.image_docs,
+            **self.counts,
+        }
+        (target / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+        return metadata
+
+    def load(self, directory: str | Path) -> Dict[str, Any]:
+        source = Path(directory)
+        metadata_path = source / "metadata.json"
+        text_index_path = source / "text.index"
+        image_index_path = source / "image.index"
+        if not metadata_path.exists() or not text_index_path.exists() or not image_index_path.exists():
+            return {"loaded": False, "reason": "missing_index_files"}
+
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if int(metadata.get("schema") or 0) != self.SCHEMA_VERSION:
+            return {"loaded": False, "reason": "schema_mismatch"}
+
+        self.text_index = self.faiss.read_index(str(text_index_path))
+        self.image_index = self.faiss.read_index(str(image_index_path))
+        self.text_docs = list(metadata.get("text_docs") or [])
+        self.image_docs = list(metadata.get("image_docs") or [])
+        return {"loaded": True, **self.counts}
