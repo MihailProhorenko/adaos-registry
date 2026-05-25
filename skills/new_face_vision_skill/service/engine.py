@@ -224,8 +224,19 @@ class NewFaceVisionEngine:
 
         source = "manifest" if manifest else "legacy"
         files = manifest.get("files") if isinstance(manifest.get("files"), Mapping) else None
+        discovered_files: dict[str, dict[str, Any]] = {}
         if files is None:
             files = self._discover_latest_upload_refs()
+        else:
+            merged_files = dict(files)
+            for kind in ("model", "frames", "masks", "metadata"):
+                if self._normalize_file_ref(merged_files.get(kind)):
+                    continue
+                if not discovered_files:
+                    discovered_files = self._discover_latest_upload_refs()
+                if kind in discovered_files:
+                    merged_files[kind] = discovered_files[kind]
+            files = merged_files
 
         thresholds = manifest.get("thresholds") if isinstance(manifest.get("thresholds"), Mapping) else {}
         self._restore_thresholds(thresholds)
