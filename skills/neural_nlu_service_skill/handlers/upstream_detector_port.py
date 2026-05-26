@@ -36,6 +36,30 @@ except Exception:  # pragma: no cover - optional runtime dependency
     faiss = None
 
 
+def _service_version() -> str:
+    env_version = (os.getenv("ADAOS_SKILL_VERSION") or os.getenv("ADAOS_NEURAL_NLU_VERSION") or "").strip()
+    if env_version:
+        return env_version
+
+    for parent in Path(__file__).resolve().parents:
+        manifest = parent / "skill.yaml"
+        if not manifest.exists():
+            continue
+        try:
+            for line in manifest.read_text(encoding="utf-8").splitlines():
+                key, sep, value = line.partition(":")
+                if sep and key.strip() == "version":
+                    version = value.strip().strip("'\"")
+                    if version:
+                        return version
+        except OSError:
+            continue
+    return "0.0.0"
+
+
+_SERVICE_VERSION = _service_version()
+
+
 @dataclass
 class Config:
     PAD_IDX: int = 0
@@ -1210,7 +1234,7 @@ class Detector:
         return {
             "ok": True,
             "service": "neural_nlu_service_skill",
-            "version": "0.2.10",
+            "version": _SERVICE_VERSION,
             "torch_available": torch is not None,
             "faiss_available": faiss is not None,
             "model_loaded": bool(engine),
