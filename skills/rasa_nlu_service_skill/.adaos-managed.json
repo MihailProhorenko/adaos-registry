@@ -1,16 +1,15 @@
 {
   "dependencies": [
     "--no-deps",
-    "-e",
-    "file:///D:/git/adaos/src/adaos/integrations/rasa-port"
+    "adaos-rasa-nlu @ git+https://github.com/inimatic/rasa-port.git@main"
   ],
   "files": {
-    "skill.yaml": "99fec1a9f6adac2800c6c24b18f31f286558dc7c2c57219805eb8e08789e9117",
+    "skill.yaml": "d4be532e912936aadd4ce89e2b58226cb932df7b543ffbb2e97886c8e72c4d62",
     "requirements.in": "53f0dca116fe14987bcaa30f0ebc784ff8a502cb49f4bb18dbca39cf6bf1332b",
-    "README.md": "666b3b038e885c32d82e1ee728416e403ddff142e6332d99b9e16e185be67cbc",
+    "README.md": "e2c9133017115cfdcce31b42fa877f20704bf554898b528f9ceaf75645070249",
     "handlers/__init__.py": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
-    "handlers/main.py": "17e3770503f9eb66915b3dc3deb32e72c3abfb623af4c3084b677585466991c5",
-    "handlers/service.py": "4a624fbc6ba4b98f8bf34a688942272e33b67c285c972972c171c76ae95f7ba1"
+    "handlers/main.py": "80da882d9188ad62722bf03aa7519f5499959377334ff39d6b477392d36c8516",
+    "handlers/service.py": "6f43b8b6695cad5449a55ee0f2588de97970df3236402f4537ed04db4d14c004"
   },
-  "fingerprint": "2ed7f5eb2979edf8e27ab6e6daa5bd5885228e49061525f82f362765f156e145"
+  "fingerprint": "bc97d9df3b4e8f09b403a3b6afb7a79e4609e5babd38bb685d96ef2b0bb6efac"
 }
