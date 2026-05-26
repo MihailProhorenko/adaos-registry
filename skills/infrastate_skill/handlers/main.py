@@ -1547,6 +1547,9 @@ def _compact_remote_node_snapshot(value: Any) -> dict[str, Any]:
             "io_total": len(capacity.get("io") or []) if isinstance(capacity.get("io"), list) else 0,
             "skills_total": len(capacity.get("skills") or []) if isinstance(capacity.get("skills"), list) else 0,
             "scenarios_total": len(capacity.get("scenarios") or []) if isinstance(capacity.get("scenarios"), list) else 0,
+            "io": _cache_copy(capacity.get("io") or []) if isinstance(capacity.get("io"), list) else [],
+            "skills": _cache_copy(capacity.get("skills") or []) if isinstance(capacity.get("skills"), list) else [],
+            "scenarios": _cache_copy(capacity.get("scenarios") or []) if isinstance(capacity.get("scenarios"), list) else [],
         }
     desktop_catalog = value.get("desktop_catalog") if isinstance(value.get("desktop_catalog"), dict) else {}
     if desktop_catalog:
@@ -4449,6 +4452,107 @@ def _selected_node_projection(
     }
 
 
+def _remote_capacity_inventory_items(selected_member: dict[str, Any], kind: str) -> list[dict[str, Any]]:
+    snapshot = selected_member.get("node_snapshot") if isinstance(selected_member.get("node_snapshot"), dict) else {}
+    capacity = snapshot.get("capacity") if isinstance(snapshot.get("capacity"), dict) else {}
+    node_id = str(selected_member.get("node_id") or "").strip()
+    if node_id and not isinstance(capacity.get(kind), list):
+        try:
+            from adaos.services.registry.subnet_directory import get_directory  # pylint: disable=import-outside-toplevel
+
+            directory_node = get_directory().get_node(node_id) or {}
+            runtime_projection = (
+                directory_node.get("runtime_projection")
+                if isinstance(directory_node.get("runtime_projection"), dict)
+                else {}
+            )
+            directory_snapshot = (
+                runtime_projection.get("snapshot")
+                if isinstance(runtime_projection.get("snapshot"), dict)
+                else {}
+            )
+            directory_capacity = (
+                directory_snapshot.get("capacity")
+                if isinstance(directory_snapshot.get("capacity"), dict)
+                else {}
+            )
+            if isinstance(directory_capacity.get(kind), list):
+                capacity = directory_capacity
+                snapshot = directory_snapshot
+        except Exception:
+            pass
+    raw_items = capacity.get(kind) if isinstance(capacity.get(kind), list) else []
+    node_label = str(
+        selected_member.get("node_label")
+        or selected_member.get("display_name")
+        or selected_member.get("label")
+        or node_id
+    ).strip()
+    out: list[dict[str, Any]] = []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        name = str(raw.get("name") or raw.get("id") or "").strip()
+        if not name:
+            continue
+        version = str(raw.get("version") or raw.get("active_version") or "").strip()
+        active = bool(raw.get("active", True))
+        item = {
+            "id": name,
+            "name": name,
+            "title": name,
+            "display_name": name,
+            "version": version,
+            "active_version": version,
+            "workspace_source_version": "",
+            "catalog_version": "",
+            "catalog_source": "",
+            "catalog_commit": "",
+            "catalog_state": "",
+            "catalog_display": "unknown",
+            "workspace_display": "unknown",
+            "runtime_display": version or ("active" if active else "none"),
+            "runtime_bucket": "",
+            "version_display": version or "unknown",
+            "slot": "",
+            "active": active,
+            "status": "ok" if active else "idle",
+            "subtitle": version or ("active" if active else "inactive"),
+            "description": f"Reported by {node_label or 'remote member'} capacity.",
+            "can_activate": False,
+            "can_hard_pull": False,
+            "can_push": False,
+            "can_validate": False,
+            "can_test": active,
+            "can_logs": False,
+            "uninstall_disabled": True,
+            "remote_version": "",
+            "update_available": False,
+            "registry_mismatch": False,
+            "has_drift": False,
+            "status_icon": "checkmark-circle-outline" if active else "ellipse-outline",
+            "status_tooltip": f"Reported by {node_label or 'remote member'} capacity.",
+            "node_id": node_id,
+            "target_node_id": node_id,
+            "node_label": node_label,
+            "source": "member.capacity",
+            "updated_at": raw.get("updated_at") or snapshot.get("captured_at"),
+        }
+        if kind == "skills":
+            item["used_by_scenarios"] = []
+            item["rollout_quarantine"] = False
+            item["rollout_quarantine_reason"] = ""
+        else:
+            item["installed_display"] = version or "active"
+            item["dependency_lifecycle_failed"] = False
+            item["dependency_failure_summary"] = ""
+            item["dependency_failure_operation_id"] = ""
+            item["dependency_failure_failed"] = []
+        out.append(item)
+    out.sort(key=lambda x: str(x.get("name") or ""))
+    return out
+
+
 def _event_state() -> list[dict[str, Any]]:
     raw = skill_memory_get(_EVENTS_STATE_KEY, [])
     return raw if isinstance(raw, list) else []
@@ -6823,17 +6927,23 @@ def _snapshot(webspace_id: str | None = None, selected_node_id: str | None = Non
     except Exception:
         slot_items = []
     try:
-        skills_items = _filter_inventory_drift(
-            _inventory_items_from(_skills_items),
-            drift_only=_inventory_drift_only_enabled(ui_state),
-        )
+        if selected_member:
+            skills_items = _remote_capacity_inventory_items(selected_member, "skills")
+        else:
+            skills_items = _filter_inventory_drift(
+                _inventory_items_from(_skills_items),
+                drift_only=_inventory_drift_only_enabled(ui_state),
+            )
     except Exception:
         skills_items = []
     try:
-        scenario_items = _filter_inventory_drift(
-            _inventory_items_from(lambda include_all=True: _scenario_items(include_all=include_all, operations=operations)),
-            drift_only=_inventory_drift_only_enabled(ui_state),
-        )
+        if selected_member:
+            scenario_items = _remote_capacity_inventory_items(selected_member, "scenarios")
+        else:
+            scenario_items = _filter_inventory_drift(
+                _inventory_items_from(lambda include_all=True: _scenario_items(include_all=include_all, operations=operations)),
+                drift_only=_inventory_drift_only_enabled(ui_state),
+            )
     except Exception:
         scenario_items = []
     try:
@@ -7085,11 +7195,37 @@ def _build_stream_payload_for_receiver(receiver: str, webspace_id: str | None = 
         if rows:
             return rows
     if token == _skills_receiver():
+        try:
+            conf = load_config()
+            ui_state = _ui_state()
+            selected_node_id = str(ui_state.get("selected_node_id") or "").strip()
+            local_node_id = str(getattr(conf, "node_id", "") or "").strip()
+            if selected_node_id and selected_node_id != local_node_id:
+                lifecycle = runtime_lifecycle_snapshot()
+                reliability = _reliability_snapshot(conf, lifecycle if isinstance(lifecycle, dict) else {})
+                member = _selected_member_entry(reliability, selected_node_id)
+                if member:
+                    return _remote_capacity_inventory_items(member, "skills")
+        except Exception:
+            _log.debug("failed to build remote member skills stream payload", exc_info=True)
         return _filter_inventory_drift(
             _inventory_items_from(_skills_items),
             drift_only=_inventory_drift_only_enabled(),
         )
     if token == _scenarios_receiver():
+        try:
+            conf = load_config()
+            ui_state = _ui_state()
+            selected_node_id = str(ui_state.get("selected_node_id") or "").strip()
+            local_node_id = str(getattr(conf, "node_id", "") or "").strip()
+            if selected_node_id and selected_node_id != local_node_id:
+                lifecycle = runtime_lifecycle_snapshot()
+                reliability = _reliability_snapshot(conf, lifecycle if isinstance(lifecycle, dict) else {})
+                member = _selected_member_entry(reliability, selected_node_id)
+                if member:
+                    return _remote_capacity_inventory_items(member, "scenarios")
+        except Exception:
+            _log.debug("failed to build remote member scenarios stream payload", exc_info=True)
         return _filter_inventory_drift(
             _inventory_items_from(_scenario_items),
             drift_only=_inventory_drift_only_enabled(),
@@ -7307,6 +7443,8 @@ def get_snapshot(
         _projection_diag["tool_project_current_skip_total"] = int(_projection_diag.get("tool_project_current_skip_total") or 0) + 1
     if projection_required and _should_project_snapshot_result(webspace_id, reason="tool.get_snapshot"):
         _project(snapshot, webspace_id=webspace_id)
+    if remote_target_requested:
+        return _compact_snapshot_for_client(snapshot)
     return _minimal_snapshot_for_client(snapshot)
 
 
