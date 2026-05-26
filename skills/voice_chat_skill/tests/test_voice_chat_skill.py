@@ -72,6 +72,24 @@ def test_voice_chat_get_snapshot_uses_projected_state_without_yjs(monkeypatch):
     assert streamed[0][2]["force"] is True
 
 
+def test_voice_chat_messages_survive_new_tool_invocation(monkeypatch):
+    mod = _load_voice_chat_module()
+    memory: dict[str, object] = {}
+
+    monkeypatch.setattr(mod, "memory_get", lambda key, default=None: memory.get(key, default))
+    monkeypatch.setattr(mod, "memory_set", lambda key, value: memory.__setitem__(key, value))
+    monkeypatch.setattr(mod, "_project_state", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(mod, "_publish_tail_stream", lambda *_args, **_kwargs: None)
+
+    mod._append_projected_message("desktop", None, from_="user", text="weather in Berlin")
+    mod._STATE_BY_KEY.clear()
+
+    snapshot = mod.get_snapshot(webspace_id="desktop")
+
+    assert snapshot["messages"][0]["from"] == "user"
+    assert snapshot["messages"][0]["text"] == "weather in Berlin"
+
+
 def test_voice_chat_skill_yaml_exports_get_snapshot():
     manifest = (
         Path(__file__).resolve().parents[1]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import time
 from pathlib import Path
@@ -8,6 +9,7 @@ import logging
 
 from adaos.sdk.core.decorators import subscribe, tool
 from adaos.sdk.data import ProjectionContext, StreamReceiver, StreamRuntime, ctx_subnet
+from adaos.sdk.data.skill_memory import get as memory_get, set as memory_set
 from adaos.sdk.io import stream_publish
 from adaos.sdk.io.out import chat_append, say
 from adaos.services.agent_context import get_ctx
@@ -94,11 +96,44 @@ def _state_key(webspace_id: str, target_node_id: str | None = None) -> str:
     return f"{str(webspace_id or default_webspace_id()).strip() or default_webspace_id()}\0{str(target_node_id or '').strip()}"
 
 
+def _state_memory_key(state_key: str) -> str:
+    digest = hashlib.sha256(str(state_key or "").encode("utf-8")).hexdigest()[:24]
+    return f"voice_chat.state.{digest}"
+
+
+def _load_persisted_state(state_key: str) -> dict[str, Any] | None:
+    try:
+        raw = memory_get(_state_memory_key(state_key))
+    except Exception:
+        raw = None
+    if not isinstance(raw, Mapping):
+        return None
+    messages = _bounded_messages(raw.get("messages"), limit=_MAX_MESSAGES)
+    return {
+        "messages": messages,
+        "last_refresh_ts": raw.get("last_refresh_ts") or time.time(),
+        "last_access_ts": time.time(),
+    }
+
+
+def _persist_state(state_key: str, state: Mapping[str, Any]) -> None:
+    try:
+        memory_set(
+            _state_memory_key(state_key),
+            {
+                "messages": _bounded_messages(state.get("messages"), limit=_MAX_MESSAGES),
+                "last_refresh_ts": state.get("last_refresh_ts") or time.time(),
+            },
+        )
+    except Exception:
+        _log.debug("voice_chat state persistence failed key=%s", state_key, exc_info=True)
+
+
 def _state_for(webspace_id: str, target_node_id: str | None = None) -> dict[str, Any]:
     key = _state_key(webspace_id, target_node_id)
     state = _STATE_BY_KEY.get(key)
     if not isinstance(state, dict):
-        state = {"messages": [], "last_refresh_ts": time.time()}
+        state = _load_persisted_state(key) or {"messages": [], "last_refresh_ts": time.time()}
         _STATE_BY_KEY[key] = state
     state["last_access_ts"] = time.time()
     if not isinstance(state.get("messages"), list):
@@ -226,6 +261,7 @@ def _append_projected_message(
     messages.append(_message(from_, text))
     state["messages"] = messages[-_MAX_MESSAGES:]
     state["last_refresh_ts"] = time.time()
+    _persist_state(_state_key(webspace_id, target_node_id), state)
     _project_state(webspace_id, target_node_id)
     _publish_tail_stream(webspace_id, target_node_id)
 
