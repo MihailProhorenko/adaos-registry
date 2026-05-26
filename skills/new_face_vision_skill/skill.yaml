@@ -1,5 +1,5 @@
 name: new_face_vision_skill
-version: 0.2.17
+version: 0.2.18
 description: Анализ дефектов камней на видео с помощью нейросети (сегментация DeepLabV3)
 entry: handlers/main.py
 runtime:
@@ -81,6 +81,25 @@ tools:
         type: object
       file:
         type: object
+      webspace_id:
+        type: string
+- name: new_face_vision_model_storage_status
+  description: Get Root-hosted current and previous model artifact metadata.
+  entry: handlers.main:new_face_vision_model_storage_status
+  input_schema:
+    type: object
+    properties:
+      label:
+        type: string
+      webspace_id:
+        type: string
+- name: new_face_vision_restore_previous_model
+  description: Download the previous Root-hosted model artifact and load it.
+  entry: handlers.main:new_face_vision_restore_previous_model
+  timeout_seconds: 300
+  input_schema:
+    type: object
+    properties:
       webspace_id:
         type: string
 - name: new_face_vision_load_frames
@@ -361,5 +380,5 @@ data_projections:
   targets:
   - backend: yjs
     path: data/new_face_vision/history
-updated_at: '2026-05-25T11:20:47+00:00'
+updated_at: '2026-05-26T10:48:32+00:00'
 

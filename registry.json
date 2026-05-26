@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-05-26T09:49:09+00:00",
+  "updated_at": "2026-05-26T10:48:32+00:00",
   "skills": [
     {
       "kind": "skill",
@@ -235,8 +235,8 @@
       "kind": "skill",
       "id": "new_face_vision_skill",
       "name": "new_face_vision_skill",
-      "version": "0.2.17",
-      "updated_at": "2026-05-25T11:20:47+00:00",
+      "version": "0.2.18",
+      "updated_at": "2026-05-26T10:48:32+00:00",
       "path": "skills/new_face_vision_skill",
       "manifest": "skills/new_face_vision_skill/skill.yaml",
       "source": {
@@ -251,7 +251,7 @@
       "description": "Анализ дефектов камней на видео с помощью нейросети (сегментация DeepLabV3)",
       "entry": "handlers/main.py",
       "runtime_python": "3.11",
-      "tools_count": 20
+      "tools_count": 22
     },
     {
       "kind": "skill",

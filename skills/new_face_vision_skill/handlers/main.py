@@ -96,6 +96,34 @@ def _uploads_dir() -> Path | None:
     return None
 
 
+def _models_dir() -> Path:
+    for key in ("ADAOS_SKILL_ENV_PATH", "ADAOS_SKILL_MEMORY_PATH"):
+        raw = str(os.getenv(key) or "").strip()
+        if not raw:
+            continue
+        path = Path(raw)
+        data_root = path.parent.parent if path.parent.name == "db" else path.parent
+        candidate = (data_root / "files" / "models").resolve()
+        candidate.mkdir(parents=True, exist_ok=True)
+        return candidate
+    try:
+        ctx = get_ctx()
+        runtime_root = Path(ctx.paths.workspace_dir()) / "skills" / ".runtime" / SKILL_NAME
+        current_version_path = runtime_root / "current_version"
+        if current_version_path.exists():
+            current_version = current_version_path.read_text(encoding="utf-8").strip()
+            if current_version:
+                major_minor = ".".join(current_version.lstrip("vV").split(".")[:2]) or current_version
+                candidate = runtime_root / f"v{major_minor}" / "data" / "files" / "models"
+                candidate.mkdir(parents=True, exist_ok=True)
+                return candidate.resolve()
+    except Exception:
+        _log.debug("failed to discover new_face_vision model directory", exc_info=True)
+    candidate = _SKILL_ROOT / ".state" / "data" / "files" / "models"
+    candidate.mkdir(parents=True, exist_ok=True)
+    return candidate
+
+
 def _engine_instance() -> Any:
     global _engine
     if _engine is None:
@@ -458,6 +486,33 @@ def _source_ref(path: Any = None, artifact_ref: Any = None, file: Any = None, **
     return None
 
 
+def _publish_model_to_root(path: str, *, result: Mapping[str, Any]) -> dict[str, Any]:
+    try:
+        from adaos.sdk.data.models import update_model_if_changed
+
+        file_path = Path(path)
+        metadata = {
+            "source": "new_face_vision_load_model",
+            "device": result.get("device"),
+            "size_mb": result.get("size_mb"),
+        }
+        return update_model_if_changed(
+            file_path,
+            skill_id=SKILL_NAME,
+            artifact=file_path.name,
+            metadata={key: value for key, value in metadata.items() if value is not None},
+        )
+    except Exception as exc:
+        _log.warning("failed to publish new_face_vision model to Root: %s", exc)
+        return {"ok": False, "error": str(exc)}
+
+
+def _model_storage_info(label: str = "current") -> dict[str, Any]:
+    from adaos.sdk.data.models import get_model_manifest
+
+    return get_model_manifest(SKILL_NAME, label=label)
+
+
 def _result_with_snapshot(result: dict[str, Any], *, webspace_id: str | None = None) -> dict[str, Any]:
     ok = bool(result.get("ok", True))
     if not ok:
@@ -560,7 +615,46 @@ def new_face_vision_load_model(
         resolved_path = _resolve_path(path, artifact_ref, file, **payload)
         with _ENGINE_LOCK:
             result = _engine_instance().load_model(resolved_path, source_ref=_source_ref(path, artifact_ref, file, **payload))
+        if result.get("ok") and resolved_path:
+            result = {**result, "model_storage": _publish_model_to_root(resolved_path, result=result)}
         return _result_with_snapshot(result, webspace_id=webspace_id)
+    except Exception as exc:
+        return _handle_error(exc, webspace_id=webspace_id)
+
+
+@tool("new_face_vision_model_storage_status")
+def new_face_vision_model_storage_status(
+    label: str | None = None,
+    webspace_id: str | None = None,
+    **_: Any,
+) -> dict[str, Any]:
+    try:
+        current = _model_storage_info("current")
+        previous = _model_storage_info("previous") if str(label or "").strip().lower() in {"", "all", "previous"} else None
+        payload = {"ok": True, "current_model": current}
+        if previous is not None:
+            payload["previous_model"] = previous
+        return _result_with_snapshot(payload, webspace_id=webspace_id)
+    except Exception as exc:
+        return _handle_error(exc, webspace_id=webspace_id)
+
+
+@tool("new_face_vision_restore_previous_model")
+def new_face_vision_restore_previous_model(webspace_id: str | None = None, **_: Any) -> dict[str, Any]:
+    try:
+        from adaos.sdk.data.models import download_previous_model
+
+        download = download_previous_model(_models_dir(), skill_id=SKILL_NAME)
+        with _ENGINE_LOCK:
+            result = _engine_instance().load_model(
+                str(download.get("path") or ""),
+                source_ref={
+                    "purpose": "models",
+                    "source": "root_previous",
+                    "root": download.get("manifest"),
+                },
+            )
+        return _result_with_snapshot({**result, "model_storage": download}, webspace_id=webspace_id)
     except Exception as exc:
         return _handle_error(exc, webspace_id=webspace_id)
 

@@ -55,6 +55,12 @@ _UPLOAD_EXTENSIONS = {
     "masks": {".zip"},
     "metadata": {".jsonl", ".json", ".ndjson"},
 }
+_UPLOAD_PURPOSES = {
+    "model": ("models", "model"),
+    "frames": ("frames",),
+    "masks": ("masks",),
+    "metadata": ("metadata",),
+}
 
 
 class NewFaceVisionEngine:
@@ -1431,16 +1437,22 @@ class NewFaceVisionEngine:
             return {}
         refs: dict[str, dict[str, Any]] = {}
         for kind, extensions in _UPLOAD_EXTENSIONS.items():
-            purpose_dir = self.upload_root / kind
-            if not purpose_dir.exists():
-                continue
+            purpose_dirs = [self.upload_root / purpose for purpose in _UPLOAD_PURPOSES.get(kind, (kind,))]
             candidates = [
                 path
+                for purpose_dir in purpose_dirs
+                if purpose_dir.exists()
                 for path in purpose_dir.rglob("*")
                 if path.is_file() and not path.name.startswith(".") and path.suffix.lower() in extensions
             ]
             if not candidates:
-                candidates = [path for path in purpose_dir.rglob("*") if path.is_file() and not path.name.startswith(".")]
+                candidates = [
+                    path
+                    for purpose_dir in purpose_dirs
+                    if purpose_dir.exists()
+                    for path in purpose_dir.rglob("*")
+                    if path.is_file() and not path.name.startswith(".")
+                ]
             if not candidates:
                 continue
             latest = max(candidates, key=lambda path: path.stat().st_mtime)

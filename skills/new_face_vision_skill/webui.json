@@ -478,7 +478,7 @@
               "title": "Model file",
               "inputs": {
                 "skill": "new_face_vision_skill",
-                "purpose": "model",
+                "purpose": "models",
                 "accept": ".pt,.pth,.onnx,application/octet-stream",
                 "label": "Upload model",
                 "maxBytes": 1073741824
