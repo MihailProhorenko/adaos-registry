@@ -79,9 +79,9 @@ _MARKETPLACE_GIT_REF_TIMEOUT_S = max(
 _MARKETPLACE_REGISTRY_JSON_URL = (
     str(
         os.getenv("ADAOS_INFRASTATE_MARKETPLACE_REGISTRY_JSON_URL")
-        or "https://raw.githubusercontent.com/stipot-com/adaos-registry/refs/heads/main/registry.json"
+        or "https://raw.githubusercontent.com/inimatic/adaos-registry/refs/heads/main/registry.json"
     ).strip()
-    or "https://raw.githubusercontent.com/stipot-com/adaos-registry/refs/heads/main/registry.json"
+    or "https://raw.githubusercontent.com/inimatic/adaos-registry/refs/heads/main/registry.json"
 )
 _SNAPSHOT_CACHE_TTL_S = max(0.0, float(os.getenv("ADAOS_INFRASTATE_SNAPSHOT_CACHE_TTL_S") or "10.0"))
 _PRESSURE_SNAPSHOT_CACHE_TTL_S = max(
