@@ -25,8 +25,8 @@ from adaos.services.zone_hosts import canonical_zone_id, zone_public_base_url
 
 _log = logging.getLogger("skills.adaos_connect")
 
-_APP_BASE_DEFAULT = "https://myinimatic.web.app"
-_BOOTSTRAP_RAW_BASE = "https://raw.githubusercontent.com/stipot-com/adaos/rev2026/tools/init"
+_APP_BASE_DEFAULT = "https://inimatic.com"
+_BOOTSTRAP_RAW_BASE = "https://raw.githubusercontent.com/inimatic/adaos/rev2026/tools/init"
 _DEFAULT_ROOT_BASES = {"https://api.inimatic.com", "http://api.inimatic.com"}
 _BROWSER_PAIR_TTL_S = 600
 _TELEGRAM_PAIR_TTL_S = 600
@@ -120,7 +120,7 @@ def _app_base_url(ctx: Any) -> str:
         host = str(urlsplit(app_base).hostname or "").strip().lower()
     except Exception:
         host = ""
-    if host == "app.inimatic.com":
+    if host in {"app.inimatic.com", "inimatic.web.app", "inimatic.firebaseapp.com"}:
         return _APP_BASE_DEFAULT
     return app_base
 
@@ -302,6 +302,7 @@ def _browser_link(*, app_base_url: str, code: str, zone_id: str | None) -> str:
 
 def _browser_registration_link(
     *,
+    app_base_url: str,
     verification_uri_complete: str | None,
     verification_uri: str | None,
     user_code: str,
@@ -309,7 +310,11 @@ def _browser_registration_link(
 ) -> str:
     complete = str(verification_uri_complete or "").strip()
     if complete:
-        return complete
+        parsed = urlsplit(complete)
+        app_parsed = urlsplit(app_base_url or _APP_BASE_DEFAULT)
+        app_path = app_parsed.path.rstrip("/")
+        path = app_path or parsed.path.rstrip("/") or "/"
+        return urlunsplit((app_parsed.scheme, app_parsed.netloc, path, parsed.query, parsed.fragment))
     base = str(verification_uri or "").strip()
     if not base:
         raise RuntimeError("browser registration link is empty")
@@ -319,8 +324,10 @@ def _browser_registration_link(
         query["user_code"] = user_code
     if zone_id and not str(query.get("zone") or "").strip():
         query["zone"] = zone_id
-    path = parsed.path.rstrip("/") or "/"
-    return urlunsplit((parsed.scheme, parsed.netloc, path, urlencode(query), ""))
+    app_parsed = urlsplit(app_base_url or _APP_BASE_DEFAULT)
+    app_path = app_parsed.path.rstrip("/")
+    path = app_path or parsed.path.rstrip("/") or "/"
+    return urlunsplit((app_parsed.scheme, app_parsed.netloc, path, urlencode(query), ""))
 
 
 def _linux_bootstrap_command(*, code: str, root_base_url: str, zone_id: str | None) -> str:
@@ -497,6 +504,7 @@ def _browser_current(context: Dict[str, Any], *, request_id: str) -> Dict[str, A
         fallback_ttl_seconds=(data or {}).get("expires_in") or _BROWSER_PAIR_TTL_S,
     )
     link = _browser_registration_link(
+        app_base_url=str(context.get("app_base_url") or _APP_BASE_DEFAULT),
         verification_uri_complete=(data or {}).get("verification_uri_complete"),
         verification_uri=(data or {}).get("verify_uri") or (data or {}).get("verification_uri"),
         user_code=code,
