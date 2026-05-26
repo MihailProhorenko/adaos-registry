@@ -13,6 +13,7 @@ from typing import Any
 _LOCK = threading.RLock()
 _RUNTIME: Any | None = None
 _MODEL_PATH: Path | None = None
+_MODEL_MTIME_NS: int | None = None
 
 
 def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict[str, Any]) -> None:
@@ -107,11 +108,19 @@ def _latest_model_path() -> Path | None:
     return None
 
 
-def _load_runtime(model_path: Path) -> Any:
-    global _RUNTIME, _MODEL_PATH
+def _model_mtime_ns(model_path: Path) -> int | None:
+    try:
+        return int(model_path.stat().st_mtime_ns)
+    except Exception:
+        return None
+
+
+def _load_runtime(model_path: Path, *, force: bool = False) -> Any:
+    global _RUNTIME, _MODEL_PATH, _MODEL_MTIME_NS
 
     with _LOCK:
-        if _RUNTIME is not None and _MODEL_PATH == model_path:
+        mtime_ns = _model_mtime_ns(model_path)
+        if not force and _RUNTIME is not None and _MODEL_PATH == model_path and _MODEL_MTIME_NS == mtime_ns:
             return _RUNTIME
         if _RUNTIME is not None and hasattr(_RUNTIME, "close"):
             try:
@@ -123,6 +132,7 @@ def _load_runtime(model_path: Path) -> Any:
 
         _RUNTIME = load_model(model_path)
         _MODEL_PATH = model_path
+        _MODEL_MTIME_NS = mtime_ns
         return _RUNTIME
 
 
@@ -144,7 +154,7 @@ def _train(payload: dict[str, Any]) -> dict[str, Any]:
         fixed_model_name=fixed_model_name,
     )
     model_path = result.model_path.resolve()
-    _load_runtime(model_path)
+    _load_runtime(model_path, force=True)
     return {"ok": True, "model_path": str(model_path)}
 
 
@@ -188,6 +198,7 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": True,
                     "service": "rasa_nlu_service_skill",
                     "model_path": str(_MODEL_PATH) if _MODEL_PATH else None,
+                    "model_mtime_ns": _MODEL_MTIME_NS,
                 },
             )
             return
