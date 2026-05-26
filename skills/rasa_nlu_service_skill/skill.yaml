@@ -1,5 +1,5 @@
 name: rasa_nlu_service_skill
-version: 0.1.3
+version: 0.1.4
 description: Local Rasa NLU-only service for AdaOS intent detection
 runtime:
   kind: service
@@ -25,7 +25,6 @@ events:
   - nlp.intent.detected
 dependencies:
 - --no-deps
-- -e
-- file:///D:/git/adaos/src/adaos/integrations/rasa-port
-updated_at: '2026-05-19T06:21:00+00:00'
+- adaos-rasa-nlu @ git+https://github.com/inimatic/rasa-port.git@main
+updated_at: '2026-05-26T14:27:30+00:00'
 
