@@ -7,6 +7,7 @@ state transitions, API calls and payload shape live here.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -40,6 +41,7 @@ _CITY_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _GEOCODE_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _CITY_CACHE_TTL = 300.0
 _GEOCODE_CACHE_TTL = 24 * 60 * 60.0
+_STALE_WEATHER_CACHE_TTL = 24 * 60 * 60.0
 _WEATHER_UNAVAILABLE_TEXT = "\u041d\u0435 \u0443\u0434\u0430\u0435\u0442\u0441\u044f \u043f\u043e\u043b\u0443\u0447\u0438\u0442\u044c \u0434\u0430\u043d\u043d\u044b\u0435 \u043e \u043f\u043e\u0433\u043e\u0434\u0435."
 
 WEATHER_CURRENT_FIELDS = [
@@ -645,6 +647,62 @@ def _weather_cache_key(city: Optional[str], location: Optional[Dict[str, Any]]) 
     return f"city:{_canonical_city_key(city or '').lower()}"
 
 
+def _weather_memory_cache_key(cache_key: str) -> str:
+    digest = hashlib.sha256(str(cache_key or "").encode("utf-8")).hexdigest()[:24]
+    return f"weather.last_success.{digest}"
+
+
+def _remember_weather_success(cache_key: str, data: Dict[str, Any], *, now: float) -> None:
+    try:
+        memory_set(
+            _weather_memory_cache_key(cache_key),
+            {
+                "cached_at": now,
+                "data": dict(data),
+            },
+        )
+    except Exception:
+        _log.debug("failed to persist weather fallback cache key=%s", cache_key, exc_info=True)
+
+
+def _load_weather_success(cache_key: str, *, now: float) -> Optional[Dict[str, Any]]:
+    try:
+        raw = memory_get(_weather_memory_cache_key(cache_key))
+    except Exception:
+        raw = None
+    if not isinstance(raw, dict):
+        return None
+    data = raw.get("data")
+    if not isinstance(data, dict):
+        return None
+    cached_at = _to_float(raw.get("cached_at")) or 0.0
+    if cached_at <= 0 or now - cached_at > _STALE_WEATHER_CACHE_TTL:
+        return None
+    out = dict(data)
+    out["cached_at"] = cached_at
+    return out
+
+
+def _fallback_weather_payload(cache_key: str, failure: Dict[str, Any], *, now: float) -> Optional[Dict[str, Any]]:
+    cached = _load_weather_success(cache_key, now=now)
+    if not cached:
+        return None
+    error_text = str(failure.get("error") or failure.get("error_code") or "weather_api_unavailable")
+    payload = dict(cached)
+    current = dict(payload.get("current") or {})
+    current["source"] = "cache"
+    current["fallback"] = True
+    current["stale"] = True
+    current["error"] = error_text
+    current["cached_at"] = payload.get("cached_at")
+    payload["current"] = current
+    payload["source"] = "cache"
+    payload["fallback"] = True
+    payload["stale"] = True
+    payload["error"] = error_text
+    return payload
+
+
 def _fetch_weather_by_request(
     api_entry_point: str,
     *,
@@ -662,6 +720,11 @@ def _fetch_weather_by_request(
     ok, data = _fetch_weather_for_location(api_entry_point, resolved_location)
     if ok:
         _CITY_CACHE[cache_key] = (now, dict(data))
+        _remember_weather_success(cache_key, data, now=now)
+        return ok, data
+    fallback = _fallback_weather_payload(cache_key, data, now=now)
+    if fallback:
+        return True, fallback
     return ok, data
 
 
@@ -776,7 +839,7 @@ def get_snapshot(
         current = dict(result.get("current") or {})
         snapshot = _weather_projection_payload(
             current,
-            status="ok",
+            status="stale" if bool(result.get("fallback") or current.get("fallback")) else "ok",
             extra={
                 "hourly_chart": result.get("hourly_chart"),
                 "daily": result.get("daily"),
@@ -885,7 +948,7 @@ def _weather_current_payload(
     current.setdefault("updated_at", _now_iso())
     current["request_id"] = request_id
     current["pending"] = False
-    current["source"] = "api" if ok else current.get("source") or "unavailable"
+    current["source"] = current.get("source") or ("api" if ok else "unavailable")
     if error:
         current["error"] = error
     return current
@@ -1005,7 +1068,7 @@ async def _refresh_weather_live_snapshot(
         )
         snapshot = _weather_projection_payload(
             current,
-            status="ok" if ok else "error",
+            status="stale" if ok and bool(live.get("fallback") or current.get("fallback")) else "ok" if ok else "error",
             extra={
                 "hourly_chart": live.get("hourly_chart") if ok else None,
                 "daily": live.get("daily") if ok else None,

@@ -207,6 +207,57 @@ def test_weather_legacy_openweathermap_endpoint_uses_open_meteo(monkeypatch):
     assert data["wind_ms"] == 2.5
 
 
+def test_weather_fetch_uses_last_success_as_status_error_fallback(monkeypatch):
+    mod = _load_weather_module()
+    mod._CITY_CACHE.clear()
+    memory: dict[str, object] = {}
+    calls = {"count": 0}
+
+    def _fetch(_api, location):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return True, {
+                "city": "Berlin",
+                "temp": 12.5,
+                "temp_c": 12.5,
+                "description": "Clear",
+                "condition": "Clear",
+                "wind_ms": 2,
+                "current": {
+                    "city": "Berlin",
+                    "temp_c": 12.5,
+                    "condition": "Clear",
+                    "description": "Clear",
+                    "wind_ms": 2,
+                    "updated_at": "cached",
+                    "source": "api",
+                },
+                "hourly_chart": {"points": []},
+                "daily": [],
+                "updated_at": "cached",
+                "source": "api",
+            }
+        return False, {"error": "Weather API returned status 502", "location": location}
+
+    monkeypatch.setattr(mod, "memory_get", lambda key, default=None: memory.get(key, default))
+    monkeypatch.setattr(mod, "memory_set", lambda key, value: memory.__setitem__(key, value))
+    monkeypatch.setattr(mod, "_fetch_weather_for_location", _fetch)
+
+    ok, data = mod._fetch_weather("https://example.test", "Berlin")
+    assert ok is True
+    assert data["source"] == "api"
+
+    mod._CITY_CACHE.clear()
+    ok, data = mod._fetch_weather("https://example.test", "Berlin")
+
+    assert ok is True
+    assert data["source"] == "cache"
+    assert data["fallback"] is True
+    assert data["current"]["source"] == "cache"
+    assert data["current"]["stale"] is True
+    assert data["error"] == "Weather API returned status 502"
+
+
 def test_weather_config_migrates_legacy_openweathermap_endpoint(monkeypatch):
     mod = _load_weather_module()
     memory = {
