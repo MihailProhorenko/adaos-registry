@@ -356,7 +356,7 @@ def test_weather_intent_success_appends_chat_when_route_missing(monkeypatch):
     assert emitted[1][1]["_meta"] == {"webspace_id": "desktop"}
 
 
-def test_weather_intent_api_error_keeps_existing_route_single_delivery(monkeypatch):
+def test_weather_intent_api_error_appends_chat_for_voice_route(monkeypatch):
     mod = _load_weather_module()
     emitted: list[tuple[str, dict, dict]] = []
 
@@ -375,5 +375,32 @@ def test_weather_intent_api_error_keeps_existing_route_single_delivery(monkeypat
 
     asyncio.run(mod.on_weather_intent({"city": "Berlin", "_meta": {"webspace_id": "desktop", "route_id": "voice_chat"}}))
 
-    assert [entry[0] for entry in emitted] == ["ui.notify"]
+    assert [entry[0] for entry in emitted] == ["ui.notify", "io.out.chat.append"]
     assert emitted[0][1]["text"] == mod._WEATHER_UNAVAILABLE_TEXT
+    assert emitted[1][1]["text"] == mod._WEATHER_UNAVAILABLE_TEXT
+    assert emitted[1][1]["_meta"] == {"webspace_id": "desktop", "route_id": "voice_chat"}
+
+
+def test_weather_intent_success_appends_chat_and_tts_for_voice_route(monkeypatch):
+    mod = _load_weather_module()
+    emitted: list[tuple[str, dict, dict]] = []
+
+    async def _emit(topic, payload, **kwargs):
+        emitted.append((topic, payload, kwargs))
+
+    async def _fetch_weather_async(*_args, **_kwargs):
+        return True, {"city": "Moscow", "temp": 19.5, "description": ""}
+
+    monkeypatch.setattr(mod, "emit", _emit)
+    monkeypatch.setattr(mod, "_load_config", lambda: ("https://example.test", "Moscow"))
+    monkeypatch.setattr(mod, "_resolve_city", lambda city: city)
+    monkeypatch.setattr(mod, "_fetch_weather_async", _fetch_weather_async)
+    monkeypatch.setattr(mod, "_", lambda key, **kw: f"In {kw['city']} the temperature is {kw['temp']}. {kw['description']}")
+
+    import asyncio
+
+    asyncio.run(mod.on_weather_intent({"city": "Moscow", "_meta": {"webspace_id": "desktop", "route_id": "voice_chat"}}))
+
+    assert [entry[0] for entry in emitted] == ["ui.notify", "io.out.chat.append", "io.out.say"]
+    assert emitted[1][1]["text"] == "In Moscow the temperature is 19.5. "
+    assert emitted[2][1]["text"] == "In Moscow the temperature is 19.5. "

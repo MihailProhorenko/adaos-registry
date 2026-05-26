@@ -90,6 +90,110 @@ def test_voice_chat_messages_survive_new_tool_invocation(monkeypatch):
     assert snapshot["messages"][0]["text"] == "weather in Berlin"
 
 
+def test_voice_chat_local_time_command_replies(monkeypatch):
+    mod = _load_voice_chat_module()
+    replies: list[str] = []
+    spoken: list[str] = []
+
+    monkeypatch.setattr(mod, "_append_reply", lambda text, **_kwargs: replies.append(text))
+    monkeypatch.setattr(mod, "_speak_reply", lambda text, _meta: spoken.append(text))
+
+    result = mod._try_handle_local_command(
+        "\u0441\u043a\u043e\u043b\u044c\u043a\u043e \u0432\u0440\u0435\u043c\u0435\u043d\u0438",
+        webspace_id="desktop",
+        target_node_id=None,
+        meta={"route_id": "voice_chat"},
+    )
+
+    assert result and result["ok"] is True
+    assert result["intent"] == "voice.time.now"
+    assert replies and replies[0].startswith("\u0421\u0435\u0439\u0447\u0430\u0441 ")
+    assert spoken == replies
+
+
+def test_voice_chat_timer_command_schedules_completion(monkeypatch):
+    mod = _load_voice_chat_module()
+    replies: list[str] = []
+    timers: list[tuple[int, object]] = []
+
+    class _Timer:
+        daemon = False
+
+        def __init__(self, seconds, callback):
+            timers.append((seconds, callback))
+            self.seconds = seconds
+            self.callback = callback
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(mod, "_append_reply", lambda text, **_kwargs: replies.append(text))
+    monkeypatch.setattr(mod, "_speak_reply", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(mod.threading, "Timer", _Timer)
+
+    result = mod._try_handle_local_command(
+        "\u043f\u043e\u0441\u0442\u0430\u0432\u044c \u0442\u0430\u0439\u043c\u0435\u0440 \u043d\u0430 10 \u043c\u0438\u043d\u0443\u0442",
+        webspace_id="desktop",
+        target_node_id="member-1",
+        meta={"route_id": "voice_chat"},
+    )
+
+    assert result and result["ok"] is True
+    assert result["intent"] == "voice.timer.start"
+    assert result["duration_seconds"] == 600
+    assert timers and timers[0][0] == 600
+    assert "\u0437\u0430\u043f\u0443\u0449\u0435\u043d" in replies[0]
+
+
+def test_voice_chat_marketplace_command_opens_modal_once(monkeypatch):
+    mod = _load_voice_chat_module()
+    replies: list[str] = []
+    opened: list[dict[str, object]] = []
+
+    monkeypatch.setattr(mod, "_append_reply", lambda text, **_kwargs: replies.append(text))
+    monkeypatch.setattr(mod, "_speak_reply", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        mod,
+        "_publish_modal_open",
+        lambda **kwargs: opened.append(dict(kwargs)),
+    )
+
+    result = mod._try_handle_local_command(
+        "\u043e\u0442\u043a\u0440\u043e\u0439 \u043c\u0430\u0440\u043a\u0435\u0442\u043f\u043b\u0435\u0439\u0441",
+        webspace_id="desktop",
+        target_node_id=None,
+        meta={"route_id": "voice_chat"},
+    )
+
+    assert result and result["ok"] is True
+    assert result["intent"] == "desktop.open_marketplace"
+    assert opened[0]["modal_id"] == "apps_catalog"
+    assert opened[0]["suppress_voice_ack"] is True
+    assert replies == ["\u041e\u0442\u043a\u0440\u044b\u0432\u0430\u044e Marketplace."]
+
+
+def test_voice_chat_modal_open_event_acknowledges_voice_marketplace(monkeypatch):
+    mod = _load_voice_chat_module()
+    replies: list[tuple[str, str, str | None]] = []
+
+    monkeypatch.setattr(
+        mod,
+        "_append_reply",
+        lambda text, *, webspace_id, target_node_id: replies.append((text, webspace_id, target_node_id)),
+    )
+    monkeypatch.setattr(mod, "_speak_reply", lambda *_args, **_kwargs: None)
+
+    mod.on_desktop_modal_open(
+        {
+            "modal_id": "apps_catalog",
+            "webspace_id": "desktop",
+            "_meta": {"route_id": "voice_chat", "target_node_id": "member-1"},
+        }
+    )
+
+    assert replies == [("\u041e\u0442\u043a\u0440\u044b\u0432\u0430\u044e Marketplace.", "desktop", "member-1")]
+
+
 def test_voice_chat_skill_yaml_exports_get_snapshot():
     manifest = (
         Path(__file__).resolve().parents[1]

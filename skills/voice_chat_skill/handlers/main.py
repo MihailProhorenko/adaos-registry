@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any, Mapping
@@ -13,6 +15,7 @@ from adaos.sdk.data.skill_memory import get as memory_get, set as memory_set
 from adaos.sdk.io import stream_publish
 from adaos.sdk.io.out import chat_append, say
 from adaos.services.agent_context import get_ctx
+from adaos.services.eventbus import emit as bus_emit
 from adaos.services.yjs.webspace import default_webspace_id
 from adaos.skills.runtime_runner import execute_tool
 
@@ -68,6 +71,19 @@ _MAX_STATE_KEYS = 32
 _STATE_TTL_S = 3600.0
 _VOICE_TAIL_RECEIVER = "voice_chat.messages"
 _STATE_BY_KEY: dict[str, dict[str, Any]] = {}
+_MAX_TIMER_SECONDS = 24 * 60 * 60
+_TIME_RE = re.compile(
+    r"\b(?:\u0441\u043a\u043e\u043b\u044c\u043a\u043e\s+\u0432\u0440\u0435\u043c\u0435\u043d\u0438|\u043a\u043e\u0442\u043e\u0440\u044b\u0439\s+\u0447\u0430\u0441|what\s+time\s+is\s+it)\b",
+    re.IGNORECASE | re.UNICODE,
+)
+_MARKETPLACE_RE = re.compile(
+    r"\b(?:\u043e\u0442\u043a\u0440\u043e\u0439|\u043f\u043e\u043a\u0430\u0436\u0438|\u0437\u0430\u043f\u0443\u0441\u0442\u0438|open|show)\s+(?:\u043c\u0430\u0440\u043a\u0435\u0442\u043f\u043b\u0435\u0439\u0441|marketplace)\b",
+    re.IGNORECASE | re.UNICODE,
+)
+_TIMER_RE = re.compile(
+    r"\b(?:\u043f\u043e\u0441\u0442\u0430\u0432\u044c|\u0443\u0441\u0442\u0430\u043d\u043e\u0432\u0438|\u0437\u0430\u043f\u0443\u0441\u0442\u0438|set|start)\s+(?:a\s+)?(?:\u0442\u0430\u0439\u043c\u0435\u0440|timer)(?:\s+(?:\u043d\u0430|for))?\s+(?P<duration>\d+\s*(?:\u0441\u0435\u043a\u0443\u043d\u0434(?:\u0443|\u044b)?|\u0441\u0435\u043a|\u043c\u0438\u043d\u0443\u0442(?:\u0443|\u044b)?|\u043c\u0438\u043d|\u0447\u0430\u0441(?:\u0430|\u043e\u0432)?|seconds?|secs?|minutes?|mins?|hours?))\b",
+    re.IGNORECASE | re.UNICODE,
+)
 
 
 def _build_tail_stream_payload(context: ProjectionContext) -> dict[str, Any]:
@@ -271,6 +287,148 @@ def _append_reply(reply: str, *, webspace_id: str, target_node_id: str | None) -
     _append_projected_message(webspace_id, target_node_id, from_="hub", text=reply)
 
 
+def _payload(evt: Any) -> dict[str, Any]:
+    if isinstance(evt, dict):
+        return evt
+    data = getattr(evt, "payload", None)
+    return data if isinstance(data, dict) else {}
+
+
+def _meta_from_payload(payload: Mapping[str, Any] | None) -> dict[str, Any]:
+    if isinstance(payload, Mapping) and isinstance(payload.get("_meta"), Mapping):
+        return dict(payload.get("_meta") or {})
+    return {}
+
+
+def _target_node_id_from_meta(meta: Mapping[str, Any] | None) -> str | None:
+    if not isinstance(meta, Mapping):
+        return None
+    return str(meta.get("target_node_id") or meta.get("node_id") or "").strip() or None
+
+
+def _route_id(meta: Mapping[str, Any] | None) -> str:
+    if not isinstance(meta, Mapping):
+        return ""
+    return str(meta.get("route_id") or meta.get("route") or "").strip()
+
+
+def _format_now_reply() -> str:
+    return "\u0421\u0435\u0439\u0447\u0430\u0441 " + datetime.now().astimezone().strftime("%H:%M") + "."
+
+
+def _normalize_duration_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    return ""
+
+
+def _parse_duration_seconds(value: Any) -> tuple[int, str] | None:
+    text = _normalize_duration_text(value).lower()
+    match = re.search(r"(?P<num>\d+)\s*(?P<unit>[^\d\s]+)", text, flags=re.IGNORECASE | re.UNICODE)
+    if not match:
+        return None
+    amount = int(match.group("num"))
+    unit = match.group("unit").strip().lower()
+    if amount <= 0:
+        return None
+    if unit.startswith(("sec", "сек")):
+        seconds = amount
+        label = f"{amount} " + ("\u0441\u0435\u043a\u0443\u043d\u0434" if amount != 1 else "\u0441\u0435\u043a\u0443\u043d\u0434\u0443")
+    elif unit.startswith(("min", "мин")):
+        seconds = amount * 60
+        label = f"{amount} " + ("\u043c\u0438\u043d\u0443\u0442" if amount != 1 else "\u043c\u0438\u043d\u0443\u0442\u0443")
+    elif unit.startswith(("hour", "час")):
+        seconds = amount * 60 * 60
+        label = f"{amount} " + ("\u0447\u0430\u0441\u043e\u0432" if amount != 1 else "\u0447\u0430\u0441")
+    else:
+        return None
+    if seconds > _MAX_TIMER_SECONDS:
+        return None
+    return seconds, label
+
+
+def _speak_reply(reply: str, meta: Mapping[str, Any] | None) -> None:
+    try:
+        say(reply, lang=(meta or {}).get("lang") or "ru-RU")
+    except Exception:
+        _log.debug("voice_chat say failed", exc_info=True)
+
+
+def _publish_modal_open(
+    *,
+    modal_id: str,
+    webspace_id: str,
+    target_node_id: str | None,
+    meta: Mapping[str, Any] | None,
+    suppress_voice_ack: bool = False,
+) -> None:
+    event_meta = dict(meta or {})
+    event_meta.setdefault("webspace_id", webspace_id)
+    event_meta.setdefault("route_id", "voice_chat")
+    if target_node_id:
+        event_meta.setdefault("target_node_id", target_node_id)
+    if suppress_voice_ack:
+        event_meta["_voice_chat_ack_suppressed"] = True
+    bus_emit(
+        get_ctx().bus,
+        "desktop.modal.open",
+        {
+            "modal_id": modal_id,
+            "webspace_id": webspace_id,
+            "_meta": event_meta,
+        },
+        source="voice_chat_skill",
+    )
+
+
+def _start_timer(duration_text: Any, *, webspace_id: str, target_node_id: str | None, meta: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    parsed = _parse_duration_seconds(duration_text)
+    if not parsed:
+        reply = "\u041d\u0435 \u043f\u043e\u043d\u044f\u043b \u0434\u043b\u0438\u0442\u0435\u043b\u044c\u043d\u043e\u0441\u0442\u044c \u0442\u0430\u0439\u043c\u0435\u0440\u0430. \u0421\u043a\u0430\u0436\u0438, \u043d\u0430\u043f\u0440\u0438\u043c\u0435\u0440: \u00ab\u041f\u043e\u0441\u0442\u0430\u0432\u044c \u0442\u0430\u0439\u043c\u0435\u0440 \u043d\u0430 10 \u043c\u0438\u043d\u0443\u0442\u00bb."
+        _append_reply(reply, webspace_id=webspace_id, target_node_id=target_node_id)
+        _speak_reply(reply, meta)
+        return {"ok": False, "error": "duration_required"}
+    seconds, label = parsed
+    reply = f"\u0422\u0430\u0439\u043c\u0435\u0440 \u043d\u0430 {label} \u0437\u0430\u043f\u0443\u0449\u0435\u043d."
+    _append_reply(reply, webspace_id=webspace_id, target_node_id=target_node_id)
+    _speak_reply(reply, meta)
+
+    def _done() -> None:
+        done = f"\u0422\u0430\u0439\u043c\u0435\u0440 \u043d\u0430 {label} \u0438\u0441\u0442\u0435\u043a."
+        _append_reply(done, webspace_id=webspace_id, target_node_id=target_node_id)
+        _speak_reply(done, meta)
+
+    timer = threading.Timer(seconds, _done)
+    timer.daemon = True
+    timer.start()
+    return {"ok": True, "reply": reply, "duration_seconds": seconds}
+
+
+def _try_handle_local_command(text: str, *, webspace_id: str, target_node_id: str | None, meta: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    if _MARKETPLACE_RE.search(text):
+        reply = "\u041e\u0442\u043a\u0440\u044b\u0432\u0430\u044e Marketplace."
+        _publish_modal_open(
+            modal_id="apps_catalog",
+            webspace_id=webspace_id,
+            target_node_id=target_node_id,
+            meta=meta,
+            suppress_voice_ack=True,
+        )
+        _append_reply(reply, webspace_id=webspace_id, target_node_id=target_node_id)
+        _speak_reply(reply, meta)
+        return {"ok": True, "reply": reply, "intent": "desktop.open_marketplace"}
+    if _TIME_RE.search(text):
+        reply = _format_now_reply()
+        _append_reply(reply, webspace_id=webspace_id, target_node_id=target_node_id)
+        _speak_reply(reply, meta)
+        return {"ok": True, "reply": reply, "intent": "voice.time.now"}
+    timer_match = _TIMER_RE.search(text)
+    if timer_match:
+        result = _start_timer(timer_match.group("duration"), webspace_id=webspace_id, target_node_id=target_node_id, meta=meta)
+        return {**dict(result), "intent": "voice.timer.start"}
+    return None
+
+
 def _normalize_city_key(text: str) -> str:
     return (
         str(text or "")
@@ -363,6 +521,10 @@ def handle_text(text: str, _meta: Mapping[str, Any] | None = None, **_: Any) -> 
     target_node_id = str(meta.get("target_node_id") or meta.get("node_id") or "").strip() or None
     _append_projected_message(webspace_id, target_node_id, from_="user", text=text)
 
+    local_result = _try_handle_local_command(text, webspace_id=webspace_id, target_node_id=target_node_id, meta=meta)
+    if local_result is not None:
+        return dict(local_result)
+
     city_raw = _extract_city(text)
     if not city_raw:
         reply = "Пока я понимаю только запросы про погоду. Скажи: «Какая погода в Москве?»"
@@ -415,6 +577,44 @@ def get_snapshot(
         "voice_chat": snapshot,
         **snapshot,
     }
+
+
+@subscribe("voice.chat.time_now")
+def on_voice_time_now(evt: Any) -> None:
+    payload = _payload(evt)
+    meta = _meta_from_payload(payload)
+    webspace_id = _webspace_id_from_meta({**meta, **payload})
+    target_node_id = _target_node_id_from_meta({**meta, **payload})
+    reply = _format_now_reply()
+    _append_reply(reply, webspace_id=webspace_id, target_node_id=target_node_id)
+    _speak_reply(reply, meta)
+
+
+@subscribe("voice.chat.timer_start")
+def on_voice_timer_start(evt: Any) -> None:
+    payload = _payload(evt)
+    meta = _meta_from_payload(payload)
+    webspace_id = _webspace_id_from_meta({**meta, **payload})
+    target_node_id = _target_node_id_from_meta({**meta, **payload})
+    slots = payload.get("slots") if isinstance(payload.get("slots"), Mapping) else {}
+    duration = payload.get("duration") or slots.get("duration")
+    _start_timer(duration, webspace_id=webspace_id, target_node_id=target_node_id, meta=meta)
+
+
+@subscribe("desktop.modal.open")
+def on_desktop_modal_open(evt: Any) -> None:
+    payload = _payload(evt)
+    meta = _meta_from_payload(payload)
+    if _route_id(meta) != "voice_chat" or bool(meta.get("_voice_chat_ack_suppressed")):
+        return
+    modal_id = str(payload.get("modal_id") or payload.get("modalId") or "").strip()
+    if modal_id != "apps_catalog":
+        return
+    webspace_id = _webspace_id_from_meta({**meta, **payload})
+    target_node_id = _target_node_id_from_meta({**meta, **payload})
+    reply = "\u041e\u0442\u043a\u0440\u044b\u0432\u0430\u044e Marketplace."
+    _append_reply(reply, webspace_id=webspace_id, target_node_id=target_node_id)
+    _speak_reply(reply, meta)
 
 
 @subscribe("webio.stream.snapshot.requested")
