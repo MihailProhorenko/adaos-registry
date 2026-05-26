@@ -4,6 +4,7 @@ import importlib
 import json
 import pathlib
 import sys
+import types
 
 import yaml
 
@@ -20,6 +21,9 @@ def test_manifest_declares_runtime_contracts() -> None:
     assert "requirements.txt" not in {path.name for path in SKILL_ROOT.iterdir()}
     assert "faiss-cpu==1.13.2" in manifest["dependencies"]
     assert "torch==2.10.0" in manifest["dependencies"]
+    weights = manifest["models"]["artifacts"]["weights"]
+    assert weights["path"] == "ml/weights/model2.pt"
+    assert weights["install_path"] == "data/files/models/model2.pt"
     assert "media_indexer.action" in manifest["events"]["subscribe"]
     assert "webio.stream.snapshot.requested" in manifest["events"]["subscribe"]
     assert any(route["route"] == "stream" and route["receiver"] == "media_indexer.operations" for route in manifest["data_routes"])
@@ -54,6 +58,14 @@ def test_scanner_finds_supported_media_without_hashing(tmp_path: pathlib.Path) -
 def test_handler_import_is_passive_and_search_without_index_does_not_load_models(monkeypatch, tmp_path: pathlib.Path) -> None:
     monkeypatch.setenv("ADAOS_SKILL_ENV_PATH", str(tmp_path / "skill_env.json"))
     monkeypatch.setenv("MEDIA_INDEXER_DATA_DIR", str(tmp_path / "data"))
+    y_py = types.ModuleType("y_py")
+    y_py.YDoc = object
+    monkeypatch.setitem(sys.modules, "y_py", y_py)
+    ystore = types.ModuleType("ypy_websocket.ystore")
+    ystore.BaseYStore = object
+    ystore.YDocNotFound = FileNotFoundError
+    monkeypatch.setitem(sys.modules, "ypy_websocket", types.ModuleType("ypy_websocket"))
+    monkeypatch.setitem(sys.modules, "ypy_websocket.ystore", ystore)
 
     main = importlib.import_module("handlers.main")
     main.dispose()
@@ -63,3 +75,19 @@ def test_handler_import_is_passive_and_search_without_index_does_not_load_models
     assert result["status"] == "error"
     assert result["results"] == []
     assert main._state["vector_db"] is None
+
+
+def test_ner_weights_prefers_skill_runtime_models_dir(monkeypatch, tmp_path: pathlib.Path) -> None:
+    model_dir = tmp_path / "data" / "files" / "models"
+    model_dir.mkdir(parents=True)
+    weights = model_dir / "model2.pt"
+    weights.write_bytes(b"fake weights")
+    monkeypatch.setenv("MEDIA_INDEXER_MODEL_DIR", str(model_dir))
+
+    from lib.ner_predictor import model_weights_path, model_weights_status
+
+    assert model_weights_path() == weights
+    status = model_weights_status()
+    assert status["path"] == str(weights)
+    assert status["exists"] is True
+    assert status["source"] == "skill_data_models"

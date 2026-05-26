@@ -21,16 +21,20 @@ natural-language search across videos, audio files, and images.
 
 ## Model Storage
 
-The current NER weights source is temporary: Google Drive file
-`19YBXzTYLoizbm8RF8gigUQ0fApZVmpoZ`. On first ML initialization the skill
-downloads it to:
+The NER weights are declared in `skill.yaml` under
+`models.artifacts.weights`. During install AdaOS places the active artifact in
+the skill-owned runtime data store:
 
 ```text
-ml/weights/model2.pt
+data/files/models/model2.pt
 ```
 
-The planned replacement is a dedicated model repository. Keep that migration
-localized to `lib/ner_predictor.py`.
+For the current bootstrap period the upload source is a git-ignored local file
+at `ml/weights/model2.pt`, seeded from Google Drive file
+`19YBXzTYLoizbm8RF8gigUQ0fApZVmpoZ`. `skill push` uploads the file to Root only
+when its SHA-256 differs from Root `current`; Root keeps `previous` for
+rollback. Runtime code uses `data/files/models` first and falls back to the
+legacy local/Google Drive path only for development recovery.
 
 ## Tools
 

@@ -1,9 +1,9 @@
 """NER model wrapper for media filename parsing.
 
-The custom weights are stored under the skill directory in ``ml/weights``.
-If the file is absent, the current temporary source of truth is Google Drive;
-the first model initialization downloads it into the skill package. This keeps
-the later repository-for-models migration localized to this module.
+Runtime weights are expected in the skill-owned data store under
+``data/files/models``. A legacy package-local path and Google Drive fallback are
+kept only for development/bootstrap until Root-hosted model delivery is fully
+rolled out.
 """
 
 from __future__ import annotations
@@ -20,10 +20,32 @@ LABELS = ["O", "B-TITLE", "I-TITLE", "B-YEAR", "I-YEAR", "B-QUALITY", "I-QUALITY
 ID2LABEL = {idx: label for idx, label in enumerate(LABELS)}
 
 BASE_DIR = Path(__file__).resolve().parents[1]
-MODEL_WEIGHTS_PATH = BASE_DIR / "ml" / "weights" / "model2.pt"
+LEGACY_MODEL_WEIGHTS_PATH = BASE_DIR / "ml" / "weights" / "model2.pt"
+MODEL_ARTIFACT_NAME = "model2.pt"
 GDRIVE_MODEL_ID = "19YBXzTYLoizbm8RF8gigUQ0fApZVmpoZ"
 GDRIVE_MODEL_URL = f"https://drive.google.com/uc?id={GDRIVE_MODEL_ID}"
 BASE_MODEL_NAME = "distilbert-base-multilingual-cased"
+
+
+def _runtime_models_dir() -> Path:
+    override = os.getenv("MEDIA_INDEXER_MODEL_DIR")
+    if override:
+        return Path(override)
+    env_path = os.getenv("ADAOS_SKILL_ENV_PATH")
+    if env_path:
+        path = Path(env_path)
+        data_root = path.parents[1] if path.parent.name == "db" else path.parent
+        return data_root / "files" / "models"
+    return LEGACY_MODEL_WEIGHTS_PATH.parent
+
+
+def model_weights_path() -> Path:
+    runtime_path = _runtime_models_dir() / MODEL_ARTIFACT_NAME
+    if runtime_path.exists():
+        return runtime_path
+    if LEGACY_MODEL_WEIGHTS_PATH.exists():
+        return LEGACY_MODEL_WEIGHTS_PATH
+    return runtime_path
 
 
 def _ensure_weights_downloaded(weights_path: Path) -> None:
@@ -57,12 +79,13 @@ class NERPredictor:
             self.model = None
 
     def _load_weights(self) -> None:
-        _ensure_weights_downloaded(MODEL_WEIGHTS_PATH)
-        state_dict = self.torch.load(str(MODEL_WEIGHTS_PATH), map_location=self.device, weights_only=True)
+        weights_path = model_weights_path()
+        _ensure_weights_downloaded(weights_path)
+        state_dict = self.torch.load(str(weights_path), map_location=self.device, weights_only=True)
         self.model.load_state_dict(state_dict)
         self.model.to(self.device)
         self.model.eval()
-        logger.info("NER weights loaded from %s", MODEL_WEIGHTS_PATH)
+        logger.info("NER weights loaded from %s", weights_path)
 
     def extract_entities(self, text: str) -> Dict[str, str]:
         if not self.model or not text.strip():
@@ -128,10 +151,11 @@ class NERPredictor:
 
 
 def model_weights_status() -> dict[str, object]:
+    path = model_weights_path()
     return {
-        "path": str(MODEL_WEIGHTS_PATH),
-        "exists": MODEL_WEIGHTS_PATH.exists(),
-        "source": "google_drive_temporary",
+        "path": str(path),
+        "exists": path.exists(),
+        "source": "skill_data_models" if path.exists() and path.parent.name == "models" else "google_drive_temporary",
         "google_drive_id": GDRIVE_MODEL_ID,
-        "size_bytes": MODEL_WEIGHTS_PATH.stat().st_size if MODEL_WEIGHTS_PATH.exists() else 0,
+        "size_bytes": path.stat().st_size if path.exists() else 0,
     }
