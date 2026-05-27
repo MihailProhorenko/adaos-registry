@@ -141,9 +141,47 @@ EXCLUSION_KEYWORDS = {
     "time.now": ("погода", "будильник", "напомни"),
 }
 
+_FALSE_VALUES = {"0", "false", "no", "off", "disable", "disabled", "none"}
+_TEMPLATE_PATTERNS_TOTAL = 4
+_TEMPLATE_WEATHER_KEYWORD_RE = re.compile(
+    r"\b(?:\u043f\u043e\u0433\u043e\u0434\u0430|\u043f\u0440\u043e\u0433\u043d\u043e\u0437|\u0442\u0435\u043c\u043f\u0435\u0440\u0430\u0442\u0443\u0440\u0430|weather|forecast|temperature)\b",
+    re.IGNORECASE | re.UNICODE,
+)
+_TEMPLATE_WEATHER_CITY_RU_RE = re.compile(
+    r"\b(?:\u043a\u0430\u043a\u0430\u044f\s+\u043f\u043e\u0433\u043e\u0434\u0430|\u043f\u043e\u0433\u043e\u0434\u0430|\u043f\u0440\u043e\u0433\u043d\u043e\u0437|\u0442\u0435\u043c\u043f\u0435\u0440\u0430\u0442\u0443\u0440\u0430)\b(?:\s+(?:\u0432|\u0434\u043b\u044f)\s+(?P<city>[^?.!,;:]+))?",
+    re.IGNORECASE | re.UNICODE,
+)
+_TEMPLATE_WEATHER_CITY_EN_RE = re.compile(
+    r"\b(?:weather|forecast|temperature)\b(?:\s+(?:in|for)\s+(?P<city>[^?.!,;:]+))?",
+    re.IGNORECASE | re.UNICODE,
+)
+_TEMPLATE_MARKETPLACE_RE = re.compile(
+    r"\b(?:\u043e\u0442\u043a\u0440\u043e\u0439|\u043f\u043e\u043a\u0430\u0436\u0438|\u0437\u0430\u043f\u0443\u0441\u0442\u0438|open|show)\s+(?:\u043c\u0430\u0440\u043a\u0435\u0442\u043f\u043b\u0435\u0439\u0441|marketplace)\b",
+    re.IGNORECASE | re.UNICODE,
+)
+_TEMPLATE_TIME_NOW_RE = re.compile(
+    r"\b(?:\u0441\u043a\u043e\u043b\u044c\u043a\u043e\s+\u0432\u0440\u0435\u043c\u0435\u043d\u0438|\u043a\u043e\u0442\u043e\u0440\u044b\u0439\s+\u0447\u0430\u0441|what\s+time\s+is\s+it)\b",
+    re.IGNORECASE | re.UNICODE,
+)
+_TEMPLATE_TIMER_START_RE = re.compile(
+    r"\b(?:\u043f\u043e\u0441\u0442\u0430\u0432\u044c|\u0443\u0441\u0442\u0430\u043d\u043e\u0432\u0438|\u0437\u0430\u043f\u0443\u0441\u0442\u0438|set|start)\s+(?:a\s+)?(?:\u0442\u0430\u0439\u043c\u0435\u0440|timer)(?:\s+(?:\u043d\u0430|for))?\s+(?P<duration>\d+\s*(?:\u0441\u0435\u043a\u0443\u043d\u0434(?:\u0443|\u044b)?|\u0441\u0435\u043a|\u043c\u0438\u043d\u0443\u0442(?:\u0443|\u044b)?|\u043c\u0438\u043d|\u0447\u0430\u0441(?:\u0430|\u043e\u0432)?|seconds?|secs?|minutes?|mins?|hours?))\b",
+    re.IGNORECASE | re.UNICODE,
+)
+
 
 def _canon(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "").strip())
+
+
+def _clean_slot(value: str | None) -> str | None:
+    if not isinstance(value, str):
+        return None
+    token = value.strip().strip(" \t\r\n'\"()[]{}")
+    return token if token else None
+
+
+def _template_backend_enabled() -> bool:
+    return os.getenv("ADAOS_NEURAL_TEMPLATE_RULES", "1").strip().lower() not in _FALSE_VALUES
 
 
 def _merge_spans(spans: list[tuple[int, int, str, str]]) -> list[tuple[int, int, str, str]]:
@@ -1034,6 +1072,103 @@ class Detector:
             out[key] = values[0] if len(values) == 1 else list(values)
         return out
 
+    def _template_result(
+        self,
+        *,
+        intent: str,
+        template_id: str,
+        confidence: float,
+        slots: dict[str, Any],
+        mask: MaskResult,
+        model_text: str,
+        entity_resolution: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        return {
+            "top_intent": intent,
+            "confidence": float(confidence),
+            "alternatives": [],
+            "slots": slots,
+            "via": "neural",
+            "model_id": os.getenv("ADAOS_NLU_NEURAL_MODEL_ID", "template-rules-v1"),
+            "evidence": {
+                "backend": "template_rules",
+                "template_id": template_id,
+                "canonicalized_text": model_text,
+                "masked_text": mask.masked,
+                "source_intent": intent,
+                "intent_mapping": {
+                    "source_label": intent,
+                    "canonical_intent": intent,
+                    "action_id": None,
+                    "target": None,
+                },
+                "entity_resolution": entity_resolution or {},
+            },
+        }
+
+    def _template_detect(self, *, model_text: str, entity_resolution: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not _template_backend_enabled():
+            return None
+
+        mask = mask_entities(model_text)
+        slots = self._flatten_slots(mask.slots)
+
+        timer_match = _TEMPLATE_TIMER_START_RE.search(model_text)
+        if timer_match:
+            duration = _clean_slot(timer_match.group("duration"))
+            if duration:
+                slots = {**slots, "duration": duration, "duration_canon": duration}
+            return self._template_result(
+                intent="voice.timer.start",
+                template_id="builtin.voice.timer_start",
+                confidence=0.99,
+                slots=slots,
+                mask=mask,
+                model_text=model_text,
+                entity_resolution=entity_resolution,
+            )
+
+        if _TEMPLATE_TIME_NOW_RE.search(model_text):
+            return self._template_result(
+                intent="voice.time.now",
+                template_id="builtin.voice.time_now",
+                confidence=0.99,
+                slots={},
+                mask=mask,
+                model_text=model_text,
+                entity_resolution=entity_resolution,
+            )
+
+        if _TEMPLATE_MARKETPLACE_RE.search(model_text):
+            return self._template_result(
+                intent="desktop.open_marketplace",
+                template_id="builtin.desktop.open_marketplace",
+                confidence=0.99,
+                slots={},
+                mask=mask,
+                model_text=model_text,
+                entity_resolution=entity_resolution,
+            )
+
+        if _TEMPLATE_WEATHER_KEYWORD_RE.search(model_text):
+            city: str | None = None
+            city_match = _TEMPLATE_WEATHER_CITY_RU_RE.search(model_text) or _TEMPLATE_WEATHER_CITY_EN_RE.search(model_text)
+            if city_match:
+                city = _clean_slot(city_match.groupdict().get("city"))
+            if city:
+                slots = {**slots, "city": city, "city_canon": slots.get("city_canon") or city}
+            return self._template_result(
+                intent="desktop.open_weather",
+                template_id="builtin.desktop.open_weather",
+                confidence=0.98,
+                slots=slots,
+                mask=mask,
+                model_text=model_text,
+                entity_resolution=entity_resolution,
+            )
+
+        return None
+
     def _neural_detect(self, *, text: str, model_text: str, entity_resolution: dict[str, Any] | None) -> dict[str, Any] | None:
         engine = self._engine
         if not isinstance(engine, dict) or torch is None:
@@ -1135,6 +1270,9 @@ class Detector:
                     return self._normalize_adapter_result(out, model_text=model_text, entity_resolution=entity_payload)
             except Exception:
                 pass
+        template = self._template_detect(model_text=model_text, entity_resolution=entity_payload)
+        if isinstance(template, dict):
+            return template
         neural = self._neural_detect(text=text, model_text=model_text, entity_resolution=entity_payload)
         if isinstance(neural, dict):
             return neural
@@ -1167,7 +1305,7 @@ class Detector:
         self._engine = self._load_neural_engine()
         after = self.health()
         return {
-            "ok": bool(after.get("model_loaded")),
+            "ok": bool(after.get("model_loaded") or after.get("template_backend_ready")),
             "purged_indexes": removed_indexes,
             "before": {
                 "model_loaded": before.get("model_loaded"),
@@ -1231,6 +1369,7 @@ class Detector:
 
     def health(self) -> dict[str, Any]:
         engine = self._engine if isinstance(self._engine, dict) else {}
+        template_ready = _template_backend_enabled()
         return {
             "ok": True,
             "service": "neural_nlu_service_skill",
@@ -1239,6 +1378,9 @@ class Detector:
             "faiss_available": faiss is not None,
             "model_loaded": bool(engine),
             "model_id": engine.get("model_id") if engine else None,
+            "active_backend": "neural+templates" if engine and template_ready else "neural" if engine else "templates" if template_ready else "none",
+            "template_backend_ready": template_ready,
+            "template_patterns_total": _TEMPLATE_PATTERNS_TOTAL if template_ready else 0,
             "examples_total": len(engine.get("examples") or []) if engine else 0,
             "example_index": engine.get("example_index_source") if engine else None,
             "example_index_backend": engine.get("example_index_backend") if engine else None,

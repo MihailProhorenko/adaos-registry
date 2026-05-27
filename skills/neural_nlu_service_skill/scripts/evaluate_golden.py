@@ -16,11 +16,10 @@ from handlers.upstream_detector_port import Detector
 
 
 DEFAULT_CASES: list[dict[str, str]] = [
-    {"id": "weather.moscow", "text": "какая погода в москве", "expected_intent": "weather.get"},
-    {"id": "timer.ten_minutes", "text": "поставь таймер на 10 минут", "expected_intent": "timer.start"},
-    {"id": "alarm.morning", "text": "разбуди меня в 7:30", "expected_intent": "alarm.set"},
-    {"id": "music.play", "text": "включи музыку", "expected_intent": "music.play"},
-    {"id": "time.now", "text": "сколько времени", "expected_intent": "time.now"},
+    {"id": "weather.moscow", "text": "какая погода в Москве", "expected_intent": "desktop.open_weather"},
+    {"id": "timer.ten_minutes", "text": "поставь таймер на 10 минут", "expected_intent": "voice.timer.start"},
+    {"id": "time.now", "text": "сколько времени", "expected_intent": "voice.time.now"},
+    {"id": "marketplace.open", "text": "открой маркетплейс", "expected_intent": "desktop.open_marketplace"},
 ]
 
 

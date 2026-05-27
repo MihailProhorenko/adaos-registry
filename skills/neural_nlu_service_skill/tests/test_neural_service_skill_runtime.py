@@ -22,13 +22,45 @@ def test_detector_abstains_cleanly_without_artifacts_or_torch(monkeypatch, tmp_p
     module = _load_detector_module()
 
     detector = module.Detector()
-    result = detector.detect("weather in Berlin", webspace_id="desktop", locale="en")
+    result = detector.detect("unsupported phrase", webspace_id="desktop", locale="en")
 
     assert result["top_intent"] == ""
     assert result["confidence"] == 0.0
     assert result["alternatives"] == []
     assert result["evidence"]["backend"] == "abstain"
     assert result["evidence"]["reason"] in {"torch_unavailable", "model_artifacts_unavailable"}
+
+
+def test_detector_template_rules_detect_core_commands_without_model(monkeypatch, tmp_path):
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    module = _load_detector_module()
+
+    detector = module.Detector()
+
+    cases = [
+        ("weather", "desktop.open_weather", {}),
+        ("weather in Berlin", "desktop.open_weather", {"city": "Berlin"}),
+        ("\u043e\u0442\u043a\u0440\u043e\u0439 \u043c\u0430\u0440\u043a\u0435\u0442\u043f\u043b\u0435\u0439\u0441", "desktop.open_marketplace", {}),
+        ("\u0441\u043a\u043e\u043b\u044c\u043a\u043e \u0432\u0440\u0435\u043c\u0435\u043d\u0438", "voice.time.now", {}),
+        (
+            "\u043f\u043e\u0441\u0442\u0430\u0432\u044c \u0442\u0430\u0439\u043c\u0435\u0440 \u043d\u0430 10 \u043c\u0438\u043d\u0443\u0442",
+            "voice.timer.start",
+            {"duration": "10 \u043c\u0438\u043d\u0443\u0442"},
+        ),
+    ]
+
+    for text, intent, expected_slots in cases:
+        result = detector.detect(text, webspace_id="desktop", locale="ru")
+        assert result["top_intent"] == intent
+        assert result["confidence"] >= 0.98
+        assert result["evidence"]["backend"] == "template_rules"
+        for key, value in expected_slots.items():
+            assert result["slots"][key] == value
+
+    health = detector.health()
+    assert health["model_loaded"] is False
+    assert health["template_backend_ready"] is True
+    assert health["active_backend"] == "templates"
 
 
 def test_detector_masks_canonicalized_text_and_slots(monkeypatch, tmp_path):
