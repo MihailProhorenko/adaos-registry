@@ -44,6 +44,12 @@ class VectorDatabase:
         self.text_docs: List[Dict[str, Any]] = []
         self.image_docs: List[Dict[str, Any]] = []
 
+    def reset(self) -> None:
+        self.text_index = self.faiss.IndexFlatIP(self.INDEX_DIMENSIONS)
+        self.image_index = self.faiss.IndexFlatIP(self.INDEX_DIMENSIONS)
+        self.text_docs = []
+        self.image_docs = []
+
     @property
     def counts(self) -> Dict[str, int]:
         return {

@@ -129,6 +129,40 @@ def _has_persisted_index() -> bool:
     return (path / "metadata.json").exists() and (path / "text.index").exists() and (path / "image.index").exists()
 
 
+def _read_persisted_index_metadata() -> Dict[str, Any]:
+    path = _index_dir()
+    metadata_path = path / "metadata.json"
+    if not metadata_path.exists():
+        return {}
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.warning("failed to read persisted media index metadata", exc_info=True)
+        return {}
+    if not isinstance(metadata, dict):
+        return {}
+    payload = {
+        "indexed_directory": "",
+        "indexed_count": int(metadata.get("total_count") or metadata.get("text_count") or 0),
+        "index_dir": str(path),
+        "restored_from": "skill_data",
+        **metadata,
+    }
+    return payload
+
+
+def _index_metadata() -> Dict[str, Any]:
+    stored = _safe_memory_get(INDEX_META_KEY, {})
+    if isinstance(stored, dict) and stored:
+        return dict(stored)
+    if not _has_persisted_index():
+        return {}
+    restored = _read_persisted_index_metadata()
+    if restored:
+        _safe_memory_set(INDEX_META_KEY, restored)
+    return restored
+
+
 def _settings() -> Dict[str, Any]:
     stored = _safe_memory_get(SETTINGS_KEY, {})
     settings = dict(stored) if isinstance(stored, dict) else {}
@@ -303,6 +337,28 @@ def _persist_index(directory: str, indexed_count: int) -> Dict[str, Any]:
     return payload
 
 
+def _clear_persisted_index(directory: str) -> Dict[str, Any]:
+    path = _index_dir()
+    for filename in ("metadata.json", "text.index", "image.index"):
+        try:
+            (path / filename).unlink(missing_ok=True)
+        except Exception:
+            logger.debug("failed to remove persisted media index file=%s", filename, exc_info=True)
+    payload = {
+        "indexed_directory": directory,
+        "indexed_count": 0,
+        "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "index_dir": str(path),
+        "cleared": True,
+    }
+    _safe_memory_set(INDEX_META_KEY, payload)
+    vector_db = _state.get("vector_db")
+    if vector_db is not None and hasattr(vector_db, "reset"):
+        vector_db.reset()
+    _state["index_loaded"] = False
+    return payload
+
+
 def has_cyrillic(text: str) -> bool:
     return bool(text) and bool(re.search(r"[\u0400-\u04FF]", text))
 
@@ -383,9 +439,10 @@ def _scan_and_index(directory: str, progress: Callable[[Dict[str, Any]], None] |
     if not all_files:
         _state["indexed_directory"] = str(path)
         _save_settings(selected_directory=str(path), default_directory=str(path))
-        _state["index_loaded"] = False
-        return {"status": "ok", "indexed_count": 0, "errors": []}
+        index_meta = _clear_persisted_index(str(path))
+        return {"status": "ok", "indexed_count": 0, "errors": [], "index": index_meta}
 
+    logger.info("Preparing media index ML initialization for %s files", len(all_files))
     if progress:
         progress(
             {
@@ -395,12 +452,15 @@ def _scan_and_index(directory: str, progress: Callable[[Dict[str, Any]], None] |
                 "total_count": len(all_files),
             }
         )
+    logger.info("Media index loading progress published; initializing ML components")
     _ensure_initialized(load_index=False)
 
     extractor = _state["extractor"]
     ner = _state["ner"]
     enricher = _state["enricher"]
     vector_db = _state["vector_db"]
+    if hasattr(vector_db, "reset"):
+        vector_db.reset()
 
     errors: List[str] = []
     indexed = 0
@@ -580,7 +640,7 @@ def get_settings() -> Dict[str, Any]:
     return {
         "status": "ok",
         "settings": _settings(),
-        "index": _safe_memory_get(INDEX_META_KEY, {}),
+        "index": _index_metadata(),
         "model_weights": model_weights_status(),
     }
 
@@ -590,7 +650,7 @@ def rehydrate() -> Dict[str, Any]:
     settings = _settings()
     _state["selected_directory"] = settings.get("selected_directory") or settings.get("default_directory") or ""
     _state["selected_query"] = settings.get("selected_query") or DEFAULT_QUERY
-    return {"status": "ok", "settings": settings, "index": _safe_memory_get(INDEX_META_KEY, {})}
+    return {"status": "ok", "settings": settings, "index": _index_metadata()}
 
 
 @tool("dispose")
@@ -653,8 +713,16 @@ async def on_media_indexer_action(evt: Any) -> None:
         _project_snapshot(_snapshot_payload(status=status, form=form), webspace_id=webspace_id)
         _publish_operation({"value": "scanning", "subtitle": "indexing media files", "description": status["description"]}, webspace_id=webspace_id)
         _state["scan_in_progress"] = True
+        progress_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
 
         def progress(update: Dict[str, Any]) -> None:
+            try:
+                loop.call_soon_threadsafe(progress_queue.put_nowait, dict(update))
+            except RuntimeError:
+                logger.debug("failed to enqueue media indexer progress", exc_info=True)
+
+        def emit_progress(update: Dict[str, Any]) -> None:
             progress_status = _status_payload(
                 value=str(update.get("value") or "indexing"),
                 subtitle=str(update.get("subtitle") or "indexing media files"),
@@ -665,7 +733,14 @@ async def on_media_indexer_action(evt: Any) -> None:
             _publish_operation(update, webspace_id=webspace_id)
 
         try:
-            result = await asyncio.to_thread(_scan_and_index, directory, progress)
+            scan_task = asyncio.create_task(asyncio.to_thread(_scan_and_index, directory, progress))
+            while not scan_task.done() or not progress_queue.empty():
+                try:
+                    update = await asyncio.wait_for(progress_queue.get(), timeout=0.25)
+                except asyncio.TimeoutError:
+                    continue
+                emit_progress(update)
+            result = await scan_task
         finally:
             _state["scan_in_progress"] = False
         errors = list(result.get("errors") or [])

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-05-27T15:39:14+00:00",
+  "updated_at": "2026-05-27T19:40:25+00:00",
   "skills": [
     {
       "kind": "skill",
@@ -192,8 +192,8 @@
       "kind": "skill",
       "id": "media_indexer_skill",
       "name": "media_indexer_skill",
-      "version": "0.1.7",
-      "updated_at": "2026-05-27T14:51:42+00:00",
+      "version": "0.1.8",
+      "updated_at": "2026-05-27T19:40:25+00:00",
       "path": "skills/media_indexer_skill",
       "manifest": "skills/media_indexer_skill/skill.yaml",
       "source": {
