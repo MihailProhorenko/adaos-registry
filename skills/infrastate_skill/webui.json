@@ -529,8 +529,11 @@
 							"title": "Installed skills",
               "visibleIf": "$state.infrastateTab === 'inventory'",
 							"dataSource": {
-								"kind": "stream",
-								"receiver": "infrastate.skills"
+								"kind": "skill",
+								"name": "infrastate_skill.get_inventory",
+								"params": {
+									"kind": "skills"
+								}
 							},
 							"inputs": {
 								"emptyText": "No installed skills",
@@ -621,8 +624,11 @@
 							"title": "Installed scenarios",
               "visibleIf": "$state.infrastateTab === 'inventory'",
 							"dataSource": {
-								"kind": "stream",
-								"receiver": "infrastate.scenarios"
+								"kind": "skill",
+								"name": "infrastate_skill.get_inventory",
+								"params": {
+									"kind": "scenarios"
+								}
 							},
 							"inputs": {
 								"emptyText": "No installed scenarios",
@@ -765,8 +771,11 @@
 							"area": "main",
 							"title": "Installable skills",
 							"dataSource": {
-								"kind": "stream",
-								"receiver": "infrastate.marketplace.skills"
+								"kind": "skill",
+								"name": "infrastate_skill.get_marketplace",
+								"params": {
+									"kind": "skills"
+								}
 							},
 							"inputs": {
 								"emptyText": "No installable skills",
@@ -800,8 +809,11 @@
 							"area": "main",
 							"title": "Installable scenarios",
 							"dataSource": {
-								"kind": "stream",
-								"receiver": "infrastate.marketplace.scenarios"
+								"kind": "skill",
+								"name": "infrastate_skill.get_marketplace",
+								"params": {
+									"kind": "scenarios"
+								}
 							},
 							"inputs": {
 								"emptyText": "No installable scenarios",

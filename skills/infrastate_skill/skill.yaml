@@ -1,5 +1,5 @@
 name: infrastate_skill
-version: 0.75.27
+version: 0.75.28
 description: Локальный обзор состояния ядра, graceful update, A/B слотов и последнего
   результата обновления.
 runtime:
@@ -561,6 +561,58 @@ tools:
     - slots
     - steps
     - logs
+- name: get_marketplace
+  description: Return installable marketplace rows for the selected node without relying
+    on the stream snapshot path.
+  entry: handlers.main:get_marketplace
+  side_effects: read
+  input_schema:
+    type: object
+    properties:
+      kind:
+        type: string
+        enum:
+        - skills
+        - scenarios
+      webspace_id:
+        type: string
+      node_id:
+        type: string
+      target_node_id:
+        type: string
+      force_refresh:
+        type: boolean
+  output_schema:
+    type: object
+    required:
+    - ok
+    - items
+- name: get_inventory
+  description: Return installed skill/scenario rows for the selected node without relying
+    on the stream snapshot path.
+  entry: handlers.main:get_inventory
+  side_effects: read
+  input_schema:
+    type: object
+    properties:
+      kind:
+        type: string
+        enum:
+        - skills
+        - scenarios
+      webspace_id:
+        type: string
+      node_id:
+        type: string
+      target_node_id:
+        type: string
+      force_refresh:
+        type: boolean
+  output_schema:
+    type: object
+    required:
+    - ok
+    - items
 - name: refresh_snapshot
   description: Refresh infrastructure snapshot and project it into the active webspace.
   entry: handlers.main:refresh_snapshot
@@ -586,5 +638,5 @@ tools:
   output_schema:
     type: object
     properties: {}
-updated_at: '2026-05-26T10:58:48+00:00'
+updated_at: '2026-05-27T00:00:00+00:00'
 

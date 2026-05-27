@@ -379,6 +379,48 @@ def test_infrastate_marketplace_items_include_selected_node_target(monkeypatch):
     assert items["skills"][0]["target_node_id"] == "member-1"
 
 
+def test_infrastate_direct_marketplace_tool_returns_items(monkeypatch):
+    mod = _load_infrastate_module()
+
+    monkeypatch.setattr(
+        mod,
+        "_snapshot_or_fallback_cached",
+        lambda **kwargs: {
+            "marketplace": {
+                "skills": [{"id": "weather_skill"}],
+                "scenarios": [{"id": "web_desktop"}],
+            }
+        },
+    )
+
+    result = mod.get_marketplace(kind="skills", webspace_id="desktop", target_node_id="hub-1")
+
+    assert result["ok"] is True
+    assert result["kind"] == "skills"
+    assert result["count"] == 1
+    assert result["items"] == [{"id": "weather_skill"}]
+
+
+def test_infrastate_direct_inventory_tool_returns_items(monkeypatch):
+    mod = _load_infrastate_module()
+
+    monkeypatch.setattr(
+        mod,
+        "_snapshot_or_fallback_cached",
+        lambda **kwargs: {
+            "skills": [{"name": "weather_skill"}],
+            "scenarios": [{"name": "web_desktop"}],
+        },
+    )
+
+    result = mod.get_inventory(kind="scenarios", webspace_id="desktop", target_node_id="hub-1")
+
+    assert result["ok"] is True
+    assert result["kind"] == "scenarios"
+    assert result["count"] == 1
+    assert result["items"] == [{"name": "web_desktop"}]
+
+
 def test_infrastate_compact_snapshot_keeps_semantic_state_plane_contracts():
     mod = _load_infrastate_module()
 

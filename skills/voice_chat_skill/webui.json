@@ -70,7 +70,7 @@
 								"stopLabel": "⏹️ Стоп",
 								"sendCommand": "voice.chat.user",
 								"scope": "shared",
-								"meta": { "route_id": "voice_chat" },
+								"meta": { "route_id": "voice_chat", "voice_chat_scope": "shared" },
 								"stt": {
 									"provider": "phone",
 									"pushToTalk": false,
@@ -81,21 +81,29 @@
 							}
 						},
 						{
+							"id": "voice-debug",
+							"type": "ui.voiceDebug",
+							"area": "main",
+							"inputs": {
+								"tracePath": "data/nlu_trace",
+								"flagsPath": "data/nlu_runtime"
+							}
+						},
+						{
 							"id": "chat",
 							"type": "ui.chat",
 							"area": "main",
 							"title": "Voice chat",
 							"dataSource": {
-								"kind": "stream",
-								"receiver": "voice_chat.messages",
-								"transport": "hub",
+								"kind": "y",
+								"path": "data/voice_chat",
 								"scope": "shared"
 							},
 							"inputs": {
 								"openCommand": "voice.chat.open",
 								"sendCommand": "voice.chat.user",
 								"scope": "shared",
-								"meta": { "route_id": "voice_chat" },
+								"meta": { "route_id": "voice_chat", "voice_chat_scope": "shared" },
 								"alignRightFrom": "user",
 								"autoSpeak": true,
 								"autoSpeakFrom": "hub",
@@ -115,6 +123,15 @@
 			"last_message": null,
 			"last_refresh_ts": 0,
 			"stream_ref": "voice_chat.messages"
+		},
+		"data/nlu_runtime": {
+			"flags": {
+				"regex_enabled": true,
+				"neural_enabled": true,
+				"rasa_enabled": true
+			},
+			"updated_at": 0,
+			"updated_by": "webui.default"
 		}
 	},
 	"widgets": [],

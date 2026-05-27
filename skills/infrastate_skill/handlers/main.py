@@ -7448,6 +7448,79 @@ def get_snapshot(
     return _minimal_snapshot_for_client(snapshot)
 
 
+@tool("get_marketplace")
+def get_marketplace(
+    kind: str = "skills",
+    webspace_id: str | None = None,
+    node_id: str | None = None,
+    target_node_id: str | None = None,
+    force_refresh: bool = False,
+    allow_cache: bool = True,
+    **_: Any,
+) -> dict[str, Any]:
+    token = str(kind or "skills").strip().lower()
+    key = "scenarios" if token.startswith("scenario") else "skills"
+    requested_node_id = str(target_node_id or node_id or "").strip()
+    if not requested_node_id:
+        try:
+            conf = load_config()
+            ui_state = _ui_state()
+            requested_node_id = str(ui_state.get("selected_node_id") or getattr(conf, "node_id", "") or "").strip()
+        except Exception:
+            requested_node_id = ""
+    snapshot = _snapshot_or_fallback_cached(
+        webspace_id=webspace_id,
+        allow_cache=bool(allow_cache) and not bool(force_refresh),
+        selected_node_id=requested_node_id or None,
+    )
+    marketplace = snapshot.get("marketplace") if isinstance(snapshot.get("marketplace"), dict) else {}
+    items = list(marketplace.get(key) or [])
+    return {
+        "ok": True,
+        "kind": key,
+        "count": len(items),
+        "items": items,
+        "webspace_id": str(webspace_id or default_webspace_id()).strip() or default_webspace_id(),
+        "selected_node_id": requested_node_id,
+    }
+
+
+@tool("get_inventory")
+def get_inventory(
+    kind: str = "skills",
+    webspace_id: str | None = None,
+    node_id: str | None = None,
+    target_node_id: str | None = None,
+    force_refresh: bool = False,
+    allow_cache: bool = True,
+    **_: Any,
+) -> dict[str, Any]:
+    token = str(kind or "skills").strip().lower()
+    key = "scenarios" if token.startswith("scenario") else "skills"
+    requested_node_id = str(target_node_id or node_id or "").strip()
+    if not requested_node_id:
+        try:
+            conf = load_config()
+            ui_state = _ui_state()
+            requested_node_id = str(ui_state.get("selected_node_id") or getattr(conf, "node_id", "") or "").strip()
+        except Exception:
+            requested_node_id = ""
+    snapshot = _snapshot_or_fallback_cached(
+        webspace_id=webspace_id,
+        allow_cache=bool(allow_cache) and not bool(force_refresh),
+        selected_node_id=requested_node_id or None,
+    )
+    items = list(snapshot.get(key) or [])
+    return {
+        "ok": True,
+        "kind": key,
+        "count": len(items),
+        "items": items,
+        "webspace_id": str(webspace_id or default_webspace_id()).strip() or default_webspace_id(),
+        "selected_node_id": requested_node_id,
+    }
+
+
 @tool("refresh_snapshot")
 def refresh_snapshot(webspace_id: str | None = None) -> dict[str, Any]:
     try:
