@@ -1,0 +1,27 @@
+name: neuro_nlu_lite_skill
+version: 0.1.1
+description: Lightweight local prototype-based NLU backend for weak AdaOS nodes
+runtime:
+  kind: service
+  env:
+    mode: venv
+    python: '3.11'
+service:
+  host: 127.0.0.1
+  port: 18093
+  command:
+  - -m
+  - handlers.main
+  healthcheck:
+    path: /health
+    timeout_ms: 1000
+permissions:
+- network
+events:
+  subscribe:
+  - nlp.intent.detect.neuro_lite
+  publish:
+  - nlp.intent.detected
+  - nlp.intent.detect.rasa
+updated_at: '2026-05-27T12:33:27+00:00'
+

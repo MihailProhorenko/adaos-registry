@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-05-27T12:32:18+00:00",
+  "updated_at": "2026-05-27T12:33:27+00:00",
   "skills": [
     {
       "kind": "skill",
@@ -249,6 +249,25 @@
         "id": "neural_nlu_service_skill"
       },
       "description": "Local neural intent detector service for AdaOS NLU pipeline"
+    },
+    {
+      "kind": "skill",
+      "id": "neuro_nlu_lite_skill",
+      "name": "neuro_nlu_lite_skill",
+      "version": "0.1.1",
+      "updated_at": "2026-05-27T12:33:27+00:00",
+      "path": "skills/neuro_nlu_lite_skill",
+      "manifest": "skills/neuro_nlu_lite_skill/skill.yaml",
+      "source": {
+        "path": "skills/neuro_nlu_lite_skill",
+        "manifest": "skills/neuro_nlu_lite_skill/skill.yaml"
+      },
+      "install": {
+        "kind": "skill",
+        "name": "neuro_nlu_lite_skill",
+        "id": "neuro_nlu_lite_skill"
+      },
+      "description": "Lightweight local prototype-based NLU backend for weak AdaOS nodes"
     },
     {
       "kind": "skill",
