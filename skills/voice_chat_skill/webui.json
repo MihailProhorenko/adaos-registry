@@ -86,7 +86,29 @@
 							"area": "main",
 							"inputs": {
 								"tracePath": "data/nlu_trace",
-								"flagsPath": "data/nlu_runtime"
+								"flagsPath": "data/nlu_runtime",
+								"stages": [
+									{
+										"id": "regex",
+										"label": "RegExp",
+										"flag": "regex_enabled"
+									},
+									{
+										"id": "neuro_lite",
+										"label": "Neuro Lite",
+										"flag": "neuro_lite_enabled"
+									},
+									{
+										"id": "neural",
+										"label": "Neural",
+										"flag": "neural_enabled"
+									},
+									{
+										"id": "rasa",
+										"label": "RASA",
+										"flag": "rasa_enabled"
+									}
+								]
 							}
 						},
 						{
@@ -95,8 +117,9 @@
 							"area": "main",
 							"title": "Voice chat",
 							"dataSource": {
-								"kind": "y",
-								"path": "data/voice_chat",
+								"kind": "stream",
+								"receiver": "voice_chat.messages",
+								"transport": "hub",
 								"scope": "shared"
 							},
 							"inputs": {
@@ -127,6 +150,7 @@
 		"data/nlu_runtime": {
 			"flags": {
 				"regex_enabled": true,
+				"neuro_lite_enabled": true,
 				"neural_enabled": true,
 				"rasa_enabled": true
 			},

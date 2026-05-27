@@ -1,8 +1,8 @@
 name: voice_chat_skill
-version: 0.6.6
+version: 0.6.7
 description: Voice chat bridge for web_desktop (text in -> publish chat + TTS via
-  io.out.*; shared chat history goes through YJS, with stream receiver kept as a
-  recovery/compatibility path).
+  io.out.*; shared chat history goes through YJS, with stream receiver kept as a recovery/compatibility
+  path).
 runtime:
   python: '3.11'
 events:
@@ -24,8 +24,8 @@ data_routes:
   projection_slot: voice_chat.state
   path: data/voice_chat
   first_paint: shared voice chat history from the last YJS projection
-  recovery: YJS replay restores the bounded chat tail; stream receiver remains a
-    compatibility snapshot path.
+  recovery: YJS replay restores the bounded chat tail; stream receiver remains a compatibility
+    snapshot path.
   update_source:
   - voice_chat_skill.handle_text
   budget:
@@ -88,5 +88,5 @@ tools:
     additionalProperties: true
   output_schema:
     type: object
-updated_at: '2026-05-27T00:00:00+00:00'
+updated_at: '2026-05-27T15:39:14+00:00'
 
