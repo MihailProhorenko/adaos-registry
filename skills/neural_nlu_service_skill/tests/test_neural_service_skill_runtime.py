@@ -82,6 +82,76 @@ def test_detector_masks_canonicalized_text_and_slots(monkeypatch, tmp_path):
     assert result["evidence"]["entity_resolution"]["resolved_entities"][0]["canonical_ref"] == "device:member:node-1"
 
 
+def test_detector_artifact_root_prefers_runtime_data_from_source(monkeypatch, tmp_path):
+    module = _load_detector_module()
+    runtime_file = (
+        tmp_path
+        / "workspace"
+        / "skills"
+        / ".runtime"
+        / "neural_nlu_service_skill"
+        / "v0.2"
+        / "slots"
+        / "B"
+        / "src"
+        / "skills"
+        / "neural_nlu_service_skill"
+        / "handlers"
+        / "upstream_detector_port.py"
+    )
+    monkeypatch.delenv("ADAOS_NEURAL_ARTIFACT_ROOT", raising=False)
+    monkeypatch.delenv("ADAOS_BASE_DIR", raising=False)
+    monkeypatch.setattr(module, "__file__", str(runtime_file))
+    expected = (
+        tmp_path
+        / "workspace"
+        / "skills"
+        / ".runtime"
+        / "neural_nlu_service_skill"
+        / "v0.2"
+        / "data"
+        / "files"
+        / "nlu"
+        / "neural"
+    ).resolve()
+
+    assert module.Detector._artifacts_root() == expected
+
+
+def test_detector_prefers_neural_result_over_template(monkeypatch, tmp_path):
+    monkeypatch.setenv("ADAOS_BASE_DIR", str(tmp_path))
+    module = _load_detector_module()
+    detector = object.__new__(module.Detector)
+    detector._adapter = None
+
+    monkeypatch.setattr(
+        detector,
+        "_neural_detect",
+        lambda **_kwargs: {
+            "top_intent": "desktop.open_marketplace",
+            "confidence": 0.84,
+            "slots": {},
+            "evidence": {"backend": "charcnn_bilstm", "ranker": "faiss_knn"},
+        },
+    )
+    monkeypatch.setattr(
+        detector,
+        "_template_detect",
+        lambda **_kwargs: {
+            "top_intent": "desktop.open_weather",
+            "confidence": 0.99,
+            "slots": {},
+            "evidence": {"backend": "template_rules"},
+        },
+    )
+
+    result = detector.detect("открой маркетплейс", webspace_id="desktop", locale="ru")
+
+    assert result["top_intent"] == "desktop.open_marketplace"
+    assert result["evidence"]["backend"] == "charcnn_bilstm"
+    assert result["evidence"]["ranker"] == "faiss_knn"
+
+
 def test_detector_prefers_faiss_pairs_when_index_backend_is_faiss(monkeypatch):
     module = _load_detector_module()
     detector = object.__new__(module.Detector)

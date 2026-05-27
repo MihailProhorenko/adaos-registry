@@ -344,6 +344,30 @@ def _split_paths(raw: str) -> list[Path]:
     return out
 
 
+def _runtime_artifacts_root_from_source() -> Path | None:
+    for parent in Path(__file__).resolve().parents:
+        if (
+            parent.name.startswith("v")
+            and parent.parent.name == "neural_nlu_service_skill"
+            and parent.parent.parent.name == ".runtime"
+        ):
+            return parent / "data" / "files" / "nlu" / "neural"
+    return None
+
+
+def _default_artifacts_root() -> Path:
+    explicit = os.getenv("ADAOS_NEURAL_ARTIFACT_ROOT", "").strip()
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    runtime_root = _runtime_artifacts_root_from_source()
+    if runtime_root is not None:
+        return runtime_root.resolve()
+    base_dir = os.getenv("ADAOS_BASE_DIR", "").strip()
+    if base_dir:
+        return Path(base_dir).expanduser().resolve() / "state" / "nlu" / "neural"
+    return Path.home() / ".adaos" / "state" / "nlu" / "neural"
+
+
 class Detector:
     def __init__(self) -> None:
         self._cfg = self._load_ranker_config()
@@ -352,10 +376,7 @@ class Detector:
 
     @staticmethod
     def _artifacts_root() -> Path:
-        base_dir = os.getenv("ADAOS_BASE_DIR", "").strip()
-        if base_dir:
-            return Path(base_dir).expanduser().resolve() / "state" / "nlu" / "neural"
-        return Path.home() / ".adaos" / "state" / "nlu" / "neural"
+        return _default_artifacts_root()
 
     def _load_ranker_config(self) -> Config:
         cfg = Config()
@@ -1270,12 +1291,12 @@ class Detector:
                     return self._normalize_adapter_result(out, model_text=model_text, entity_resolution=entity_payload)
             except Exception:
                 pass
-        template = self._template_detect(model_text=model_text, entity_resolution=entity_payload)
-        if isinstance(template, dict):
-            return template
         neural = self._neural_detect(text=text, model_text=model_text, entity_resolution=entity_payload)
         if isinstance(neural, dict):
             return neural
+        template = self._template_detect(model_text=model_text, entity_resolution=entity_payload)
+        if isinstance(template, dict):
+            return template
         return self._abstain(text=text, model_text=model_text, entity_resolution=entity_payload)
 
     def _purge_example_indexes(self) -> list[str]:

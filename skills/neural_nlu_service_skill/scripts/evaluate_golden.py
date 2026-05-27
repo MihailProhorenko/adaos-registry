@@ -24,6 +24,16 @@ DEFAULT_CASES: list[dict[str, str]] = [
 
 
 def _default_artifact_root() -> Path:
+    explicit = os.getenv("ADAOS_NEURAL_ARTIFACT_ROOT", "").strip()
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    for parent in Path(__file__).resolve().parents:
+        if (
+            parent.name.startswith("v")
+            and parent.parent.name == "neural_nlu_service_skill"
+            and parent.parent.parent.name == ".runtime"
+        ):
+            return (parent / "data" / "files" / "nlu" / "neural").resolve()
     base_dir = os.getenv("ADAOS_BASE_DIR", "").strip()
     if base_dir:
         return Path(base_dir).expanduser().resolve() / "state" / "nlu" / "neural"
