@@ -26,7 +26,7 @@ from adaos.services.system_model.service import (
     current_object_inspector,
     current_overview_projection,
 )
-from adaos.services.yjs.doc import try_read_live_map_value
+from adaos.services.yjs.doc import get_ydoc, mutate_live_room, try_read_live_map_value
 from adaos.services.yjs.webspace import default_webspace_id
 
 _log = logging.getLogger("skills.infrascope_skill")
@@ -1015,7 +1015,24 @@ def _project_snapshot(snapshot: dict[str, Any], *, webspace_id: str) -> bool:
     last_applied_at = float(_last_projected_at_mono.get(webspace_id) or 0.0)
     if last_applied_at > 0 and now - last_applied_at < _MIN_YJS_PROJECTION_INTERVAL_S:
         return False
-    ctx_subnet.set("infrascope.snapshot", compact, webspace_id=webspace_id)
+    def _mutator(ydoc: Any, txn: Any) -> None:
+        ydoc.get_map("data").set(txn, "infrascope", deepcopy(compact))
+
+    mutate_live_room(
+        webspace_id,
+        _mutator,
+        root_names=["data"],
+        source="infrascope_skill.project_snapshot",
+        owner="skill:infrascope_skill",
+        channel="projection.yjs.live_room",
+        governed=True,
+    )
+    try:
+        with get_ydoc(webspace_id, load_mark_roots=["data"], governed=True) as ydoc:
+            with ydoc.begin_transaction() as txn:
+                _mutator(ydoc, txn)
+    except RuntimeError:
+        ctx_subnet.set("infrascope.snapshot", compact, webspace_id=webspace_id)
     _last_projected_fingerprints[webspace_id] = fingerprint
     _last_projected_at_mono[webspace_id] = now
     return True
@@ -1556,6 +1573,34 @@ def on_webio_stream_snapshot_requested(evt: Any) -> None:
     if stream_payload is None:
         return
     _publish_stream_payload(receiver, stream_payload, webspace_id=webspace_id, force=True)
+
+
+def _is_infrascope_yjs_projection_payload(payload: dict[str, Any]) -> bool:
+    slot = str(payload.get("slot") or payload.get("projection") or "").strip()
+    topic = str(payload.get("topic") or "").strip()
+    return slot == "infrascope" or slot.startswith("infrascope.") or ".infrascope" in topic
+
+
+@subscribe("webio.yjs.snapshot.requested")
+def on_webio_yjs_snapshot_requested(evt: Any) -> None:
+    payload = getattr(evt, "payload", evt)
+    if not isinstance(payload, dict) or not _is_infrascope_yjs_projection_payload(payload):
+        return
+    refresh_snapshot(webspace_id=_webspace_id_from_payload(payload) or _event_webspace_fallback())
+
+
+@subscribe("webio.yjs.subscription.changed")
+def on_webio_yjs_subscription_changed(evt: Any) -> None:
+    payload = getattr(evt, "payload", evt)
+    if not isinstance(payload, dict) or not _is_infrascope_yjs_projection_payload(payload):
+        return
+    action = str(payload.get("action") or "subscribed").strip().lower()
+    if action in {"unsubscribed", "removed", "release"}:
+        return
+    _schedule_snapshot_refresh(
+        webspace_id=_webspace_id_from_payload(payload) or _event_webspace_fallback(),
+        reason="webio.yjs.subscription",
+    )
 
 
 @subscribe("webio.stream.subscription.changed")
