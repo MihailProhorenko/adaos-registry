@@ -1,5 +1,5 @@
 name: new_face_vision_skill
-version: 0.2.18
+version: 0.2.19
 description: Анализ дефектов камней на видео с помощью нейросети (сегментация DeepLabV3)
 entry: handlers/main.py
 runtime:
@@ -9,6 +9,8 @@ dependencies:
 - numpy>=1.24.0
 - torch>=2.2.0
 - torchvision>=0.17.0
+models:
+  private: true
 lifecycle:
   persist_before_switch: new_face_vision_persist_state
   rehydrate: new_face_vision_rehydrate
@@ -380,5 +382,5 @@ data_projections:
   targets:
   - backend: yjs
     path: data/new_face_vision/history
-updated_at: '2026-05-26T10:48:32+00:00'
+updated_at: '2026-05-27T14:51:42+00:00'
 
