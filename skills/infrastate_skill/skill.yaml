@@ -1,5 +1,5 @@
 name: infrastate_skill
-version: 0.75.28
+version: 0.75.29
 description: Локальный обзор состояния ядра, graceful update, A/B слотов и последнего
   результата обновления.
 runtime:
@@ -268,7 +268,7 @@ data_routes:
   owner: skill:infrastate_skill
   receiver: infrastate.skills
   first_paint: loading skills initial state
-  recovery: direct inventory snapshot requested on stream subscribe
+  recovery: stream snapshot requested on stream subscribe
   update_source:
   - skills.activated
   - skill.installed
@@ -288,7 +288,7 @@ data_routes:
   owner: skill:infrastate_skill
   receiver: infrastate.scenarios
   first_paint: loading scenarios initial state
-  recovery: direct inventory snapshot requested on stream subscribe
+  recovery: stream snapshot requested on stream subscribe
   update_source:
   - scenario.installed
   - scenario.removed

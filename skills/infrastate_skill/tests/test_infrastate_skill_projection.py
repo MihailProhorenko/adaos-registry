@@ -2727,6 +2727,30 @@ def test_infrastate_marketplace_action_opens_modal_without_host_roundtrip():
     assert not any(action.get("on") == "click" and action.get("target") == "infrastate.action" for action in actions)
 
 
+def test_infrastate_inventory_and_marketplace_use_stream_data_sources():
+    webui = json.loads((Path(__file__).resolve().parents[1] / "webui.json").read_text(encoding="utf-8"))
+    infrastate_widgets = webui["registry"]["modals"]["infrastate_modal"]["schema"]["widgets"]
+    marketplace_widgets = webui["registry"]["modals"]["marketplace_modal"]["schema"]["widgets"]
+    by_id = {widget.get("id"): widget for widget in [*infrastate_widgets, *marketplace_widgets]}
+
+    assert by_id["infrastate-skills"]["dataSource"] == {
+        "kind": "stream",
+        "receiver": "infrastate.skills",
+    }
+    assert by_id["infrastate-scenarios"]["dataSource"] == {
+        "kind": "stream",
+        "receiver": "infrastate.scenarios",
+    }
+    assert by_id["marketplace-skills"]["dataSource"] == {
+        "kind": "stream",
+        "receiver": "infrastate.marketplace.skills",
+    }
+    assert by_id["marketplace-scenarios"]["dataSource"] == {
+        "kind": "stream",
+        "receiver": "infrastate.marketplace.scenarios",
+    }
+
+
 def test_infrastate_runtime_event_invalidates_snapshot_cache(monkeypatch):
     mod = _load_infrastate_module()
     invalidated: list[str | None] = []

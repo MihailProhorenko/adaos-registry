@@ -81,7 +81,7 @@
         "initialState": { "status": "init", "message": "Loading installed skills...", "items": [] },
         "budget": { "maxPayloadBytes": 65536, "maxPublishHz": 0.5, "maxSnapshotHz": 1, "maxItems": 256 },
         "guardVisibility": { "degradedState": "Keep last skills inventory stream value.", "log": "service.infrastate_skill.runtime.log", "quarantine": false, "metric": "webio_stream_guard.infrastate.skills" },
-        "route": { "kind": "stream", "surface": "modal:installed_skills", "owner": "skill:infrastate_skill", "firstPaint": "loading skills initial state", "recovery": "direct inventory snapshot requested on stream subscribe", "updateSource": ["skills.activated", "skill.installed", "skill.uninstalled", "skills.updated"] }
+        "route": { "kind": "stream", "surface": "modal:installed_skills", "owner": "skill:infrastate_skill", "firstPaint": "loading skills initial state", "recovery": "stream snapshot requested on stream subscribe", "updateSource": ["skills.activated", "skill.installed", "skill.uninstalled", "skills.updated"] }
       },
       "infrastate.scenarios": {
         "mode": "replace",
@@ -90,7 +90,7 @@
         "initialState": { "status": "init", "message": "Loading installed scenarios...", "items": [] },
         "budget": { "maxPayloadBytes": 65536, "maxPublishHz": 0.5, "maxSnapshotHz": 1, "maxItems": 256 },
         "guardVisibility": { "degradedState": "Keep last scenarios inventory stream value.", "log": "service.infrastate_skill.runtime.log", "quarantine": false, "metric": "webio_stream_guard.infrastate.scenarios" },
-        "route": { "kind": "stream", "surface": "modal:installed_scenarios", "owner": "skill:infrastate_skill", "firstPaint": "loading scenarios initial state", "recovery": "direct inventory snapshot requested on stream subscribe", "updateSource": ["scenario.installed", "scenario.removed", "scenarios.synced"] }
+        "route": { "kind": "stream", "surface": "modal:installed_scenarios", "owner": "skill:infrastate_skill", "firstPaint": "loading scenarios initial state", "recovery": "stream snapshot requested on stream subscribe", "updateSource": ["scenario.installed", "scenario.removed", "scenarios.synced"] }
       },
       "infrastate.marketplace.skills": {
         "mode": "replace",
@@ -529,11 +529,8 @@
 							"title": "Installed skills",
               "visibleIf": "$state.infrastateTab === 'inventory'",
 							"dataSource": {
-								"kind": "skill",
-								"name": "infrastate_skill.get_inventory",
-								"params": {
-									"kind": "skills"
-								}
+								"kind": "stream",
+								"receiver": "infrastate.skills"
 							},
 							"inputs": {
 								"emptyText": "No installed skills",
@@ -624,11 +621,8 @@
 							"title": "Installed scenarios",
               "visibleIf": "$state.infrastateTab === 'inventory'",
 							"dataSource": {
-								"kind": "skill",
-								"name": "infrastate_skill.get_inventory",
-								"params": {
-									"kind": "scenarios"
-								}
+								"kind": "stream",
+								"receiver": "infrastate.scenarios"
 							},
 							"inputs": {
 								"emptyText": "No installed scenarios",
@@ -771,11 +765,8 @@
 							"area": "main",
 							"title": "Installable skills",
 							"dataSource": {
-								"kind": "skill",
-								"name": "infrastate_skill.get_marketplace",
-								"params": {
-									"kind": "skills"
-								}
+								"kind": "stream",
+								"receiver": "infrastate.marketplace.skills"
 							},
 							"inputs": {
 								"emptyText": "No installable skills",
@@ -809,11 +800,8 @@
 							"area": "main",
 							"title": "Installable scenarios",
 							"dataSource": {
-								"kind": "skill",
-								"name": "infrastate_skill.get_marketplace",
-								"params": {
-									"kind": "scenarios"
-								}
+								"kind": "stream",
+								"receiver": "infrastate.marketplace.scenarios"
 							},
 							"inputs": {
 								"emptyText": "No installable scenarios",
