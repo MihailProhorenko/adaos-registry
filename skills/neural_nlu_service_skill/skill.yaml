@@ -1,5 +1,5 @@
 name: neural_nlu_service_skill
-version: 0.2.13
+version: 0.2.14
 description: Local neural intent detector service for AdaOS NLU pipeline
 runtime:
   kind: service
@@ -12,6 +12,8 @@ dependencies:
 - torch==2.12.0+cpu
 - numpy
 - faiss-cpu
+models:
+  private: true
 service:
   host: 127.0.0.1
   port: 18091
@@ -29,5 +31,5 @@ events:
   publish:
   - nlp.intent.detected
   - nlp.intent.detect.rasa
-updated_at: '2026-05-26T14:01:19+00:00'
+updated_at: '2026-05-27T14:51:43+00:00'
 
