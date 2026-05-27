@@ -691,6 +691,34 @@ def test_infrastate_remote_adaos_update_requests_member_snapshot_after_success(m
     assert ui_updates[-1]["selected_node_id"] == "member-1"
 
 
+def test_infrastate_schedule_snapshot_refresh_starts_thread_without_running_loop(monkeypatch):
+    mod = _load_infrastate_module()
+
+    calls: list[str] = []
+
+    def _no_loop():
+        raise RuntimeError("no running loop")
+
+    monkeypatch.setattr(mod.asyncio, "get_running_loop", _no_loop)
+    monkeypatch.setattr(mod, "_write_ui_state", lambda **_kwargs: None)
+    monkeypatch.setattr(mod, "_push_infrastate_skill_context", lambda: False)
+    monkeypatch.setattr(mod, "clear_current_skill", lambda: None)
+    monkeypatch.setattr(mod, "_run_background_refresh_thread", lambda: calls.append("thread"))
+    mod._background_refresh_task = None
+    mod._background_refresh_thread = None
+    mod._background_refresh_pending = False
+
+    mod._schedule_snapshot_refresh(webspace_id="desktop", reason="test.no_loop")
+
+    thread = mod._background_refresh_thread
+    assert thread is not None
+    thread.join(timeout=2.0)
+    assert calls == ["thread"]
+    assert mod._background_refresh_pending is True
+    assert mod._background_refresh_webspace_id == "desktop"
+    assert mod._background_refresh_reason == "test.no_loop"
+
+
 def test_infrastate_forget_subnet_clears_directory_and_requests_member_refresh(monkeypatch):
     mod = _load_infrastate_module()
 
@@ -2438,6 +2466,72 @@ def test_infrastate_stream_subscription_changed_forgets_without_snapshot(monkeyp
         ("desktop", "infrastate.details.skills.skill-a"),
     ]
     assert scheduled == []
+
+
+def test_infrastate_yjs_snapshot_request_schedules_projection_refresh(monkeypatch):
+    mod = _load_infrastate_module()
+    scheduled: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        mod,
+        "_schedule_snapshot_refresh",
+        lambda **kwargs: scheduled.append(dict(kwargs)),
+    )
+
+    mod.on_webio_yjs_snapshot_requested(
+        SimpleNamespace(
+            payload={
+                "slot": "infrastate.summary",
+                "webspace_id": "desktop",
+            }
+        )
+    )
+
+    assert scheduled == [
+        {"webspace_id": "desktop", "reason": "webio.yjs.snapshot_requested"},
+    ]
+
+
+def test_infrastate_yjs_subscription_changed_schedules_projection_refresh(monkeypatch):
+    mod = _load_infrastate_module()
+    scheduled: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        mod,
+        "_schedule_snapshot_refresh",
+        lambda **kwargs: scheduled.append(dict(kwargs)),
+    )
+
+    mod.on_webio_yjs_subscription_changed(
+        SimpleNamespace(
+            payload={
+                "topic": "webio.yjs.desktop.infrastate.projection_diag",
+                "webspace_id": "desktop",
+                "action": "subscribed",
+            }
+        )
+    )
+    mod.on_webio_yjs_subscription_changed(
+        SimpleNamespace(
+            payload={
+                "slot": "infrastate.summary",
+                "webspace_id": "desktop",
+                "action": "unsubscribed",
+            }
+        )
+    )
+    mod.on_webio_yjs_snapshot_requested(
+        SimpleNamespace(
+            payload={
+                "slot": "infrascope.summary",
+                "webspace_id": "desktop",
+            }
+        )
+    )
+
+    assert scheduled == [
+        {"webspace_id": "desktop", "reason": "webio.yjs.subscription_changed"},
+    ]
 
 
 def test_infrastate_operations_stream_request_uses_direct_sdk_builder(monkeypatch):

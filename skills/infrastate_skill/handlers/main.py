@@ -4060,6 +4060,14 @@ def _schedule_snapshot_refresh(*, webspace_id: str | None = None, reason: str = 
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
+        if _background_refresh_thread is not None and _background_refresh_thread.is_alive():
+            return
+        _background_refresh_thread = threading.Thread(
+            target=_run_background_refresh_thread,
+            name="infrastate-background-refresh",
+            daemon=True,
+        )
+        _background_refresh_thread.start()
         return
     if _background_refresh_task is not None and not _background_refresh_task.done():
         return
@@ -7348,6 +7356,44 @@ def _webspace_id_from_payload(payload: Any) -> str | None:
         if isinstance(token, str) and token.strip():
             return token.strip()
     return None
+
+
+def _is_infrastate_yjs_projection_payload(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    slot = str(payload.get("slot") or payload.get("projection") or "").strip()
+    if slot in _PROJECTION_SLOT_BY_NAME or slot.startswith("infrastate."):
+        return True
+    topic = str(payload.get("topic") or "").strip()
+    if ".infrastate." in topic or topic.endswith(".infrastate"):
+        return True
+    path = str(payload.get("path") or payload.get("projection_path") or "").strip()
+    return path.startswith("data/infrastate/")
+
+
+@subscribe("webio.yjs.snapshot.requested")
+def on_webio_yjs_snapshot_requested(evt: Any) -> None:
+    payload = getattr(evt, "payload", evt)
+    if not _is_infrastate_yjs_projection_payload(payload):
+        return
+    _schedule_snapshot_refresh(
+        webspace_id=_webspace_id_from_payload(payload),
+        reason="webio.yjs.snapshot_requested",
+    )
+
+
+@subscribe("webio.yjs.subscription.changed")
+def on_webio_yjs_subscription_changed(evt: Any) -> None:
+    payload = getattr(evt, "payload", evt)
+    if not _is_infrastate_yjs_projection_payload(payload):
+        return
+    action = str(payload.get("action") or "").strip().lower() or "subscribed"
+    if action == "unsubscribed":
+        return
+    _schedule_snapshot_refresh(
+        webspace_id=_webspace_id_from_payload(payload),
+        reason="webio.yjs.subscription_changed",
+    )
 
 
 @subscribe("webio.stream.snapshot.requested")

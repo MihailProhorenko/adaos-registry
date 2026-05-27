@@ -1,5 +1,5 @@
 name: infrastate_skill
-version: 0.75.29
+version: 0.75.30
 description: Локальный обзор состояния ядра, graceful update, A/B слотов и последнего
   результата обновления.
 runtime:
@@ -21,6 +21,8 @@ events:
   - desktop.webspace.refresh
   - desktop.webspace.reload
   - sys.ready
+  - webio.yjs.snapshot.requested
+  - webio.yjs.subscription.changed
   - webio.stream.snapshot.requested
   - webio.stream.subscription.changed
   - subnet.nats.up
@@ -588,8 +590,8 @@ tools:
     - ok
     - items
 - name: get_inventory
-  description: Return installed skill/scenario rows for the selected node without relying
-    on the stream snapshot path.
+  description: Return installed skill/scenario rows for the selected node without
+    relying on the stream snapshot path.
   entry: handlers.main:get_inventory
   side_effects: read
   input_schema:
@@ -638,5 +640,5 @@ tools:
   output_schema:
     type: object
     properties: {}
-updated_at: '2026-05-27T00:00:00+00:00'
+updated_at: '2026-05-27T15:39:05+00:00'
 
