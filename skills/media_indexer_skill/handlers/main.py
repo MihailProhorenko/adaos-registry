@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import pathlib
 import re
 import sys
 import time
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
 import yaml
 
@@ -18,7 +19,7 @@ from adaos.sdk.data import ctx_subnet
 from adaos.sdk.data import skill_memory
 from adaos.sdk.data.context import clear_current_skill, set_current_skill
 from adaos.sdk.data.skill_env import skill_env_path
-from adaos.sdk.io.out import stream_variable_publish
+from adaos.sdk.io.out import stream_publish
 from adaos.services.agent_context import get_ctx
 
 _SKILL_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -52,7 +53,35 @@ _state: Dict[str, Any] = {
     "selected_query": DEFAULT_QUERY,
     "index_loaded": False,
     "last_operation": None,
+    "scan_in_progress": False,
 }
+
+
+def _runtime_logs_dir() -> pathlib.Path:
+    override = os.getenv("MEDIA_INDEXER_LOG_DIR")
+    if override:
+        path = pathlib.Path(override)
+    else:
+        slot_root = _SKILL_ROOT.parents[2] if len(_SKILL_ROOT.parents) > 2 else _SKILL_ROOT
+        path = slot_root / "runtime" / "logs"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _configure_logging() -> None:
+    log_path = _runtime_logs_dir() / "media_indexer.runtime.log"
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers:
+        if isinstance(handler, logging.FileHandler) and pathlib.Path(handler.baseFilename) == log_path:
+            return
+    handler = logging.FileHandler(log_path, encoding="utf-8")
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root_logger.addHandler(handler)
+    root_logger.setLevel(min(root_logger.level or logging.INFO, logging.INFO))
+
+
+_configure_logging()
 
 
 def _event_payload(evt: Any) -> Dict[str, Any]:
@@ -232,11 +261,9 @@ def _publish_operation(value: Dict[str, Any], *, webspace_id: str | None = None)
     payload = {"label": "Media Indexer", **value, "updated_at": time.time()}
     _state["last_operation"] = payload
     try:
-        stream_variable_publish(
+        stream_publish(
             OPERATION_RECEIVER,
             payload,
-            var_id="media_indexer.operation",
-            ttl_ms=10 * 60 * 1000,
             _meta={"webspace_id": webspace_id} if webspace_id else None,
         )
     except Exception:
@@ -295,18 +322,56 @@ def _build_display_title(stem: str, title: str, artist: str) -> str:
     return stem
 
 
+def _trim_for_log(value: Any, *, limit: int = 1000) -> Any:
+    if isinstance(value, dict):
+        return {str(k): _trim_for_log(v, limit=limit) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_trim_for_log(item, limit=limit) for item in value[:20]]
+    if isinstance(value, str) and len(value) > limit:
+        return value[:limit] + "...<truncated>"
+    return value
+
+
+def _log_index_document(
+    *,
+    media_name: str,
+    ftype: str,
+    technical_metadata: Dict[str, Any],
+    ner_result: Dict[str, Any],
+    enriched: Dict[str, Any],
+    payload: Dict[str, Any],
+    index_text: str,
+    timings: Dict[str, float],
+) -> None:
+    diagnostics = {
+        "file": media_name,
+        "type": ftype,
+        "technical_metadata": technical_metadata,
+        "ner": ner_result,
+        "enriched": enriched,
+        "payload": payload,
+        "index_text": index_text,
+        "timings_sec": {key: round(value, 3) for key, value in timings.items()},
+    }
+    logger.info("Index document: %s", json.dumps(_trim_for_log(diagnostics), ensure_ascii=False, sort_keys=True))
+
+
 @tool("scan_and_index")
 def scan_and_index(directory: str) -> Dict[str, Any]:
+    return _scan_and_index(directory)
+
+
+def _scan_and_index(directory: str, progress: Callable[[Dict[str, Any]], None] | None = None) -> Dict[str, Any]:
     if not str(directory or "").strip():
         return {"status": "error", "indexed_count": 0, "errors": ["Directory is empty. Set a directory first."]}
-
-    _ensure_initialized(load_index=False)
 
     path = pathlib.Path(directory).expanduser()
     if not path.exists() or not path.is_dir():
         return {"status": "error", "indexed_count": 0, "errors": [f"Directory not found or not a directory: {directory}"]}
 
     try:
+        if progress:
+            progress({"value": "scanning", "subtitle": "walking directory", "description": f"Scanning {path}"})
         scanner = DirectoryScanner(str(path), compute_hashes=False)
         _state["scanner"] = scanner
         inventory = scanner.scan()
@@ -318,8 +383,19 @@ def scan_and_index(directory: str) -> Dict[str, Any]:
     if not all_files:
         _state["indexed_directory"] = str(path)
         _save_settings(selected_directory=str(path), default_directory=str(path))
-        _persist_index(str(path), 0)
+        _state["index_loaded"] = False
         return {"status": "ok", "indexed_count": 0, "errors": []}
+
+    if progress:
+        progress(
+            {
+                "value": "loading",
+                "subtitle": f"{len(all_files)} media files found",
+                "description": "Loading ML models before indexing.",
+                "total_count": len(all_files),
+            }
+        )
+    _ensure_initialized(load_index=False)
 
     extractor = _state["extractor"]
     ner = _state["ner"]
@@ -329,20 +405,39 @@ def scan_and_index(directory: str) -> Dict[str, Any]:
     errors: List[str] = []
     indexed = 0
 
-    for media, ftype in all_files:
+    total = len(all_files)
+    for ordinal, (media, ftype) in enumerate(all_files, start=1):
         try:
+            timings: Dict[str, float] = {}
             logger.info("Indexing media file: %s", media.name)
-            extractor.extract(media.full_path, ftype)
+            if progress:
+                progress(
+                    {
+                        "value": "indexing",
+                        "subtitle": f"{ordinal}/{total} files",
+                        "description": media.name,
+                        "indexed_count": indexed,
+                        "total_count": total,
+                    }
+                )
+            started = time.perf_counter()
+            technical = extractor.extract(media.full_path, ftype)
+            technical_metadata = technical.to_dict() if hasattr(technical, "to_dict") else {}
+            timings["technical_metadata"] = time.perf_counter() - started
 
+            started = time.perf_counter()
             ner_result = ner.extract_entities(media.name)
+            timings["ner"] = time.perf_counter() - started
             title = ner_result.get("title") or ""
             year = ner_result.get("year") or "---"
             quality = ner_result.get("quality") or "---"
             artist = ner_result.get("artist") or ""
 
+            started = time.perf_counter()
             enriched = enricher.enrich(media.full_path, ftype)
             if ftype == "video" and title:
                 enriched.update(enricher.enrich_video(title))
+            timings["enrichment"] = time.perf_counter() - started
 
             stem = pathlib.Path(media.name).stem
             display_title = _build_display_title(stem, title, artist)
@@ -357,10 +452,14 @@ def scan_and_index(directory: str) -> Dict[str, Any]:
                 "year": year,
                 "quality": quality,
                 "artist": artist,
+                "technical_metadata": technical_metadata,
                 "enriched": enriched,
             }
 
+            index_text = ""
+            started = time.perf_counter()
             if ftype == "image":
+                index_text = " ".join(["photo image", stem])
                 vector_db.add_image(media.full_path, payload)
                 vector_db.add_text(" ".join(["photo image изображение фотография", stem]), payload)
             elif ftype == "audio":
@@ -379,8 +478,12 @@ def scan_and_index(directory: str) -> Dict[str, Any]:
                     parts.append(f"genre {enriched['shazam_genre']}")
                 if has_cyrillic(stem):
                     parts.append("русская русский на русском")
+                for key in ("audio_codec", "duration_seconds", "bit_rate", "sample_rate"):
+                    if technical_metadata.get(key):
+                        parts.append(f"{key} {technical_metadata[key]}")
                 parts.append(stem)
-                vector_db.add_text(" ".join(filter(bool, parts)), payload)
+                index_text = " ".join(filter(bool, parts))
+                vector_db.add_text(index_text, payload)
             elif ftype == "video":
                 parts = ["video movie film видео фильм кино"]
                 if title:
@@ -394,15 +497,41 @@ def scan_and_index(directory: str) -> Dict[str, Any]:
                     parts.append(plot)
                 if has_cyrillic(stem):
                     parts.append("русское кино русский фильм")
+                for key in ("video_codec", "duration_seconds", "bit_rate", "width", "height"):
+                    if technical_metadata.get(key):
+                        parts.append(f"{key} {technical_metadata[key]}")
                 parts.append(stem)
-                vector_db.add_text(" ".join(filter(bool, parts)), payload)
+                index_text = " ".join(filter(bool, parts))
+                vector_db.add_text(index_text, payload)
             else:
                 continue
+
+            timings["embedding"] = time.perf_counter() - started
+            _log_index_document(
+                media_name=media.name,
+                ftype=ftype,
+                technical_metadata=technical_metadata,
+                ner_result=ner_result,
+                enriched=enriched,
+                payload=payload,
+                index_text=index_text,
+                timings=timings,
+            )
 
             indexed += 1
         except Exception as exc:
             logger.exception("Failed to index %s", getattr(media, "name", "unknown"))
             errors.append(f"{getattr(media, 'name', 'unknown')}: {exc}")
+            if progress:
+                progress(
+                    {
+                        "value": "indexing",
+                        "subtitle": f"{ordinal}/{total} files",
+                        "description": f"Skipped {getattr(media, 'name', 'unknown')}: {exc}",
+                        "indexed_count": indexed,
+                        "total_count": total,
+                    }
+                )
 
     _state["indexed_directory"] = str(path)
     _save_settings(selected_directory=str(path), default_directory=str(path))
@@ -415,11 +544,16 @@ def search_media(query: str, k: int = 5) -> Dict[str, Any]:
     if not query or not query.strip():
         return {"status": "ok", "results": []}
 
+    if _state.get("scan_in_progress"):
+        return {"status": "error", "results": [], "message": "Indexing is still in progress. Wait for the final indexed status."}
+
     if _state["vector_db"] is None and not _has_persisted_index():
         return {"status": "error", "results": [], "message": "Index is empty. Call scan_and_index first."}
 
     _ensure_initialized(load_index=True)
-    if not _state.get("index_loaded") and not ((_state.get("vector_db") or {}).text_docs if hasattr(_state.get("vector_db"), "text_docs") else False):
+    vector_db = _state.get("vector_db")
+    has_docs = bool(getattr(vector_db, "text_docs", None) or getattr(vector_db, "image_docs", None))
+    if not _state.get("index_loaded") and not has_docs:
         return {"status": "error", "results": [], "message": "Index is empty. Call scan_and_index first."}
 
     try:
@@ -518,7 +652,22 @@ async def on_media_indexer_action(evt: Any) -> None:
         status = _status_payload(value="scanning", subtitle="indexing media files", description=f"Scanning {directory or '(empty)'}")
         _project_snapshot(_snapshot_payload(status=status, form=form), webspace_id=webspace_id)
         _publish_operation({"value": "scanning", "subtitle": "indexing media files", "description": status["description"]}, webspace_id=webspace_id)
-        result = await asyncio.to_thread(scan_and_index, directory)
+        _state["scan_in_progress"] = True
+
+        def progress(update: Dict[str, Any]) -> None:
+            progress_status = _status_payload(
+                value=str(update.get("value") or "indexing"),
+                subtitle=str(update.get("subtitle") or "indexing media files"),
+                description=str(update.get("description") or ""),
+                indexed_count=int(update["indexed_count"]) if update.get("indexed_count") is not None else None,
+            )
+            _project_snapshot(_snapshot_payload(status=progress_status, form=_current_form(k=k)), webspace_id=webspace_id)
+            _publish_operation(update, webspace_id=webspace_id)
+
+        try:
+            result = await asyncio.to_thread(_scan_and_index, directory, progress)
+        finally:
+            _state["scan_in_progress"] = False
         errors = list(result.get("errors") or [])
         ok = str(result.get("status") or "").lower() == "ok"
         indexed_count = int(result.get("indexed_count") or 0)

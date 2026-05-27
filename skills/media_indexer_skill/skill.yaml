@@ -1,5 +1,5 @@
 name: media_indexer_skill
-version: 0.1.5
+version: 0.1.6
 description: Semantic indexing and multimodal search for local media files (video,
   audio, images) using NER, FAISS and CLIP.
 runtime:
@@ -207,5 +207,5 @@ tools:
     properties:
       status:
         type: string
-updated_at: '2026-05-26T09:49:09+00:00'
+updated_at: '2026-05-27T12:32:18+00:00'
 
