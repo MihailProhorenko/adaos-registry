@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import re
 import time
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -38,6 +40,7 @@ _CLASSES = [
 ]
 _PROJECTION_FINGERPRINTS: dict[str, str] = {}
 _PROJECTION_RULES_LOADED = False
+_PROJECTION_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ai-event-analysis-projection")
 
 
 class _LazyCtxSubnet:
@@ -54,6 +57,47 @@ def _ensure_projection_rules_loaded() -> None:
     global _PROJECTION_RULES_LOADED
     if _PROJECTION_RULES_LOADED:
         return
+
+
+def _skill_projection_entries() -> list[dict[str, Any]]:
+    try:
+        import yaml
+
+        manifest = yaml.safe_load((_SKILL_ROOT / "skill.yaml").read_text(encoding="utf-8")) or {}
+        entries = manifest.get("data_projections") or []
+        return entries if isinstance(entries, list) else []
+    except Exception:
+        return []
+
+
+def _apply_projection(slot: str, value: Any, *, webspace_id: str) -> None:
+    entries = _skill_projection_entries()
+    if entries:
+        try:
+            from adaos.services.agent_context import get_ctx
+            from adaos.services.scenario.projection_registry import ProjectionRegistry
+            from adaos.services.scenario.projection_service import ProjectionService
+
+            ctx = get_ctx()
+            registry = ProjectionRegistry()
+            registry.load_entries(entries)
+            service = ProjectionService(ctx=ctx, registry=registry)
+
+            async def _runner() -> None:
+                await service.apply("subnet", slot, value, webspace_id=webspace_id)
+
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                asyncio.run(_runner())
+            else:
+                _PROJECTION_EXECUTOR.submit(lambda: asyncio.run(_runner())).result()
+            return
+        except Exception:
+            pass
+
+    _ensure_projection_rules_loaded()
+    ctx_subnet.set(slot, value, webspace_id=webspace_id)
     try:
         from adaos.services.agent_context import get_ctx
         import yaml
@@ -98,8 +142,7 @@ def _set_projection_if_changed(slot: str, value: Any, *, webspace_id: str, force
     fingerprint = _fingerprint(value)
     if not force and _PROJECTION_FINGERPRINTS.get(key) == fingerprint:
         return False
-    _ensure_projection_rules_loaded()
-    ctx_subnet.set(slot, value, webspace_id=webspace_id)
+    _apply_projection(slot, value, webspace_id=webspace_id)
     _PROJECTION_FINGERPRINTS[key] = fingerprint
     return True
 
