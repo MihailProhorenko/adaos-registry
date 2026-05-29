@@ -133,3 +133,47 @@ def test_event_window_export_writes_jsonl(tmp_path: Path) -> None:
     assert result["ok"] is True
     assert result["export"]["count"] == 1
     assert json.loads(out.read_text(encoding="utf-8"))["window_id"] == "w1"
+
+
+def test_build_windows_keeps_default_tool_response_compact(tmp_path: Path) -> None:
+    mod = _load_module()
+    log_path = tmp_path / "runtime.log"
+    log_path.write_text(
+        "\n".join(f"2026-05-29T09:00:{second:02d}Z WARN projection refresh repeated" for second in range(30)),
+        encoding="utf-8",
+    )
+
+    result = mod.build_event_windows({"path": str(log_path), "window_seconds": 60})["result"]
+
+    assert result["window_count"] == 1
+    assert result["windows"] == []
+    assert result["rows"]
+    assert len(json.dumps(result, ensure_ascii=False)) < 12288
+
+
+def test_stream_dataset_publish_is_compact(monkeypatch) -> None:
+    mod = _load_module()
+    published: list[object] = []
+    monkeypatch.setattr(
+        mod,
+        "stream_publish",
+        lambda _receiver, payload, _meta=None: published.append(payload),
+    )
+
+    large_result = {
+        "window_count": 100,
+        "record_count": 500,
+        "window_seconds": 60,
+        "windows": [{"window_id": str(i), "evidence": [{"message": "x" * 1000}]} for i in range(100)],
+        "rows": [{"window_id": str(i), "events": i} for i in range(100)],
+        "event_volume_chart": {"points": [{"ts": str(i), "value": i} for i in range(100)]},
+        "class_distribution_chart": {"points": [{"ts": "normal", "value": 100}]},
+        "built_at": "2026-05-29T09:00:00Z",
+    }
+
+    mod._publish_dataset_result(large_result, webspace_id="desktop")
+
+    assert published
+    payload_json = json.dumps(published[0], ensure_ascii=False)
+    assert "x" * 1000 not in payload_json
+    assert len(payload_json.encode("utf-8")) < 12288

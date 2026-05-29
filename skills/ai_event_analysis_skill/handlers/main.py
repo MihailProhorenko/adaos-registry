@@ -15,6 +15,13 @@ _RESULTS_RECEIVER = "ai_event_analysis.results"
 _SKILL_ROOT = Path(__file__).resolve().parents[1]
 _DATA_DIR = _SKILL_ROOT / "data"
 _DEFAULT_EXPORT_PATH = _DATA_DIR / "event_windows.jsonl"
+_MAX_AUTO_LOG_SOURCES = 4
+_MAX_DEFAULT_LOG_LINES = 120
+_MAX_EXPLICIT_LOG_LINES = 1000
+_MAX_TOOL_WINDOWS = 64
+_MAX_STREAM_ROWS = 12
+_MAX_STREAM_POINTS = 24
+_MAX_EVIDENCE_PER_WINDOW = 4
 _TS_RE = re.compile(
     r"(?P<ts>\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?)"
 )
@@ -124,7 +131,8 @@ def _read_log_records(path: Path, *, max_lines: int) -> list[dict[str, Any]]:
     except Exception:
         return records
     base_ts = time.time()
-    for index, line in enumerate(lines[-max_lines:]):
+    bounded_lines = max(1, min(int(max_lines or _MAX_DEFAULT_LOG_LINES), _MAX_EXPLICIT_LOG_LINES))
+    for index, line in enumerate(lines[-bounded_lines:]):
         if not line.strip():
             continue
         ts = _parse_ts(line)
@@ -209,7 +217,7 @@ def _records_to_windows(
                         "severity": item.get("severity"),
                         "message": item.get("message"),
                     }
-                    for item in items[:12]
+                    for item in items[:_MAX_EVIDENCE_PER_WINDOW]
                 ],
                 "label": {
                     "incident": False,
@@ -261,6 +269,43 @@ def _window_rows(windows: list[Mapping[str, Any]], *, limit: int = 32) -> list[d
             }
         )
     return rows
+
+
+def _compact_evaluation_result(result: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "model": result.get("model"),
+        "window_count": result.get("window_count"),
+        "accuracy": result.get("accuracy"),
+        "macro_f1": result.get("macro_f1"),
+        "false_positive_rate": result.get("false_positive_rate"),
+        "critical_recall": result.get("critical_recall"),
+        "avg_detection_delay_s": result.get("avg_detection_delay_s"),
+        "top_reason_hit_rate": result.get("top_reason_hit_rate"),
+        "per_class": list(result.get("per_class") or []),
+        "evaluated_at": result.get("evaluated_at"),
+    }
+
+
+def _compact_dataset_result(result: Mapping[str, Any]) -> dict[str, Any]:
+    def compact_chart(value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            return value
+        chart = dict(value)
+        points = chart.get("points")
+        if isinstance(points, list):
+            chart["points"] = points[:_MAX_STREAM_POINTS]
+            chart["truncated"] = len(points) > _MAX_STREAM_POINTS
+        return chart
+
+    return {
+        "window_count": result.get("window_count"),
+        "record_count": result.get("record_count"),
+        "window_seconds": result.get("window_seconds"),
+        "rows": list(result.get("rows") or [])[:_MAX_STREAM_ROWS],
+        "event_volume_chart": compact_chart(result.get("event_volume_chart")),
+        "class_distribution_chart": compact_chart(result.get("class_distribution_chart")),
+        "built_at": result.get("built_at"),
+    }
 
 
 def _export_jsonl(windows: list[Mapping[str, Any]], path: Path) -> dict[str, Any]:
@@ -535,6 +580,7 @@ def _snapshot() -> dict[str, Any]:
 
 
 def _publish_result(result: Mapping[str, Any], *, webspace_id: str) -> None:
+    compact = _compact_evaluation_result(result)
     payload = [
         {
             "id": "summary",
@@ -543,7 +589,7 @@ def _publish_result(result: Mapping[str, Any], *, webspace_id: str) -> None:
                 f"accuracy={result.get('accuracy')} critical_recall={result.get('critical_recall')} "
                 f"normal_fpr={result.get('false_positive_rate')} windows={result.get('window_count')}"
             ),
-            "content": result,
+            "content": compact,
         },
         {
             "id": "criteria",
@@ -561,6 +607,7 @@ def _publish_result(result: Mapping[str, Any], *, webspace_id: str) -> None:
 
 
 def _publish_dataset_result(result: Mapping[str, Any], *, webspace_id: str) -> None:
+    compact = _compact_dataset_result(result)
     payload = [
         {
             "id": "dataset-windows",
@@ -569,7 +616,7 @@ def _publish_dataset_result(result: Mapping[str, Any], *, webspace_id: str) -> N
                 f"records={result.get('record_count')} window_seconds={result.get('window_seconds')} "
                 "baseline predictions are advisory until manually labeled"
             ),
-            "content": result,
+            "content": compact,
         }
     ]
     try:
@@ -613,9 +660,9 @@ def evaluate_windows(payload: Mapping[str, Any] | None = None, **_: Any) -> dict
 @tool("import_local_logs")
 def import_local_logs(payload: Mapping[str, Any] | None = None, **_: Any) -> dict[str, Any]:
     body = payload if isinstance(payload, Mapping) else {}
-    max_lines = int(_value(body, "max_lines") or 500)
+    max_lines = int(_value(body, "max_lines") or _MAX_DEFAULT_LOG_LINES)
     raw_path = str(body.get("path") or "").strip()
-    paths = [Path(raw_path)] if raw_path else _log_candidates()[:8]
+    paths = [Path(raw_path)] if raw_path else _log_candidates()[:_MAX_AUTO_LOG_SOURCES]
     records: list[dict[str, Any]] = []
     sources: list[dict[str, Any]] = []
     for path in paths:
@@ -652,11 +699,14 @@ def build_event_windows(payload: Mapping[str, Any] | None = None, **_: Any) -> d
         subnet_id=str(body.get("subnet_id") or "local"),
         webspace_id=_webspace_id_from_payload(body),
     )
+    include_windows = bool(body.get("include_windows")) or isinstance(raw_records, list)
+    result_windows = windows[:_MAX_TOOL_WINDOWS] if include_windows else []
     result = {
         "window_count": len(windows),
         "record_count": len(records),
         "window_seconds": window_seconds,
-        "windows": windows,
+        "windows": result_windows,
+        "windows_truncated": include_windows and len(windows) > len(result_windows),
         "rows": _window_rows(windows),
         "event_volume_chart": {
             "title": "Event volume by window",
@@ -681,7 +731,15 @@ def export_event_windows_jsonl(payload: Mapping[str, Any] | None = None, **_: An
     if isinstance(raw_windows, list):
         windows = [item for item in raw_windows if isinstance(item, Mapping)]
     else:
-        windows = build_event_windows(body)["result"]["windows"]
+        imported = import_local_logs(body)
+        records = [item for item in imported.get("records", []) if isinstance(item, Mapping)]
+        windows = _records_to_windows(
+            records,
+            window_seconds=int(_value(body, "window_seconds") or 60),
+            node_id=str(body.get("node_id") or "local"),
+            subnet_id=str(body.get("subnet_id") or "local"),
+            webspace_id=_webspace_id_from_payload(body),
+        )
     raw_path = str(body.get("path") or "").strip()
     path = Path(raw_path) if raw_path else _DEFAULT_EXPORT_PATH
     export = _export_jsonl(windows, path)

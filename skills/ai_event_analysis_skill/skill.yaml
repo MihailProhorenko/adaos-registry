@@ -1,5 +1,5 @@
 name: ai_event_analysis_skill
-version: 0.2.1
+version: 0.2.2
 description: Research skill for measurable AI/ML analysis of AdaOS operational event
   windows.
 runtime:
@@ -36,6 +36,60 @@ data_projections:
   targets:
   - backend: yjs
     path: data/ai_event_analysis/charts
+data_routes:
+- surface: widget:ai_event_analysis_widget
+  route: yjs
+  projection_slot: ai_event_analysis.summary
+  first_paint: compact static summary from webui defaults
+  recovery: Yjs replay restores the compact summary
+  update_source:
+  - webui defaults
+  budget:
+    max_payload_bytes: 2048
+    max_publish_hz: 0.05
+  guard_visibility:
+    degraded_state: widget keeps static summary
+    log: service.ai_event_analysis_skill.runtime.log
+    quarantine: false
+- surface: modal:ai_event_analysis.results
+  route: stream
+  receiver: ai_event_analysis.results
+  first_paint: compact pending result row
+  recovery: snapshot requested on receiver subscribe
+  update_source:
+  - webio.stream.snapshot.requested
+  - ai_event_analysis.evaluate_requested
+  - explicit tool call
+  budget:
+    max_payload_bytes: 12288
+    max_publish_hz: 0.5
+    max_items: 4
+    snapshot_policy: on_subscribe
+  guard_visibility:
+    degraded_state: UI keeps last compact result and requires manual refresh
+    log: service.ai_event_analysis_skill.runtime.log
+    quarantine: false
+- surface: tool:dataset_export
+  route: skill-local
+  first_paint: no browser data; explicit tool response only
+  recovery: rerun export_event_windows_jsonl
+  update_source:
+  - export_event_windows_jsonl
+  guard_visibility:
+    degraded_state: export reports failure in tool response
+    log: service.ai_event_analysis_skill.runtime.log
+    quarantine: false
+memory_budget:
+  expected_rss_mb: 64
+  caches: []
+  background_workers:
+    max_threads: 0
+    cleanup_hook: none
+  retained_payloads:
+    max_windows_returned_by_default: 0
+    max_windows_returned_explicitly: 64
+    max_stream_rows: 12
+    max_evidence_per_window: 4
 events:
   subscribe:
   - webio.stream.snapshot.requested
@@ -173,5 +227,5 @@ tools:
         type: boolean
       export:
         type: object
-updated_at: '2026-05-29T09:22:24+00:00'
+updated_at: '2026-05-29T10:38:45+00:00'
 

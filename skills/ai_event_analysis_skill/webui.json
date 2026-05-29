@@ -14,10 +14,10 @@
           }
         ],
         "budget": {
-          "maxPayloadBytes": 32768,
-          "maxPublishHz": 1,
-          "maxSnapshotHz": 1,
-          "maxItems": 8
+          "maxPayloadBytes": 12288,
+          "maxPublishHz": 0.5,
+          "maxSnapshotHz": 0.5,
+          "maxItems": 4
         },
         "guardVisibility": {
           "degradedState": "Keep last evaluation result and ask for a manual refresh.",
