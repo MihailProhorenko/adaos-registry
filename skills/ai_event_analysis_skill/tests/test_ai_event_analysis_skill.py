@@ -33,6 +33,9 @@ def test_manifest_declares_measurable_tools_and_stream_wakeup() -> None:
         "get_lab_snapshot",
         "run_demo_evaluation",
         "evaluate_windows",
+        "import_local_logs",
+        "build_event_windows",
+        "export_event_windows_jsonl",
     }
 
 
@@ -46,6 +49,8 @@ def test_webui_declares_app_widget_and_results_receiver() -> None:
     assert any(widget["type"] == "visual.metricChart" for widget in widgets)
     assert any(widget["type"] == "ui.table" for widget in widgets)
     assert any(widget["type"] == "ui.list" for widget in widgets)
+    tabs = next(widget for widget in widgets if widget["id"] == "ai-event-analysis-tabs")
+    assert any(button["id"] == "windows" for button in tabs["inputs"]["buttons"])
 
 
 def test_rule_baseline_returns_required_measurement_fields() -> None:
@@ -83,3 +88,48 @@ def test_custom_window_evaluation_reports_false_positive_rate() -> None:
 
     assert result["accuracy"] == 1.0
     assert result["false_positive_rate"] == 0.0
+
+
+def test_local_log_import_builds_redacted_event_windows(tmp_path: Path) -> None:
+    mod = _load_module()
+    log_path = tmp_path / "runtime.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                "2026-05-29T09:00:01Z INFO runtime ready token=abc123",
+                "2026-05-29T09:00:02Z WARN projection refresh repeated for status-card",
+                "2026-05-29T09:00:03Z ERROR yjs write pressure at C:\\Users\\secret\\node.yaml",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    imported = mod.import_local_logs({"path": str(log_path), "max_lines": 10})
+    assert imported["summary"]["record_count"] == 3
+    assert "<redacted>" in imported["records"][0]["message"]
+    assert "<path>" in imported["records"][2]["message"]
+
+    built = mod.build_event_windows({"records": imported["records"], "window_seconds": 60})
+    windows = built["result"]["windows"]
+    assert built["result"]["window_count"] == 1
+    assert windows[0]["features"]["event_total"] == 3
+    assert windows[0]["features"]["projection_refresh_total"] == 1
+    assert windows[0]["features"]["yjs_write_total"] == 1
+
+
+def test_event_window_export_writes_jsonl(tmp_path: Path) -> None:
+    mod = _load_module()
+    out = tmp_path / "windows.jsonl"
+    windows = [
+        {
+            "window_id": "w1",
+            "features": {"event_total": 1},
+            "label": {"incident": False, "incident_type": "normal", "severity": "info", "reasons": []},
+        }
+    ]
+
+    result = mod.export_event_windows_jsonl({"windows": windows, "path": str(out)})
+
+    assert result["ok"] is True
+    assert result["export"]["count"] == 1
+    assert json.loads(out.read_text(encoding="utf-8"))["window_id"] == "w1"

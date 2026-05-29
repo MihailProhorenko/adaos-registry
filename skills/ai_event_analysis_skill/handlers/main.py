@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
+import re
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Mapping
 
 from adaos.sdk.core.decorators import subscribe, tool
@@ -8,6 +12,12 @@ from adaos.sdk.data.events import publish as publish_event
 from adaos.sdk.io.out import stream_publish
 
 _RESULTS_RECEIVER = "ai_event_analysis.results"
+_SKILL_ROOT = Path(__file__).resolve().parents[1]
+_DATA_DIR = _SKILL_ROOT / "data"
+_DEFAULT_EXPORT_PATH = _DATA_DIR / "event_windows.jsonl"
+_TS_RE = re.compile(
+    r"(?P<ts>\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?)"
+)
 
 _CLASSES = [
     "normal",
@@ -32,6 +42,233 @@ def _webspace_id_from_payload(payload: Mapping[str, Any] | None) -> str:
         if isinstance(nested, str) and nested.strip():
             return nested.strip()
     return "desktop"
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _parse_ts(raw: str) -> float | None:
+    match = _TS_RE.search(raw or "")
+    if not match:
+        return None
+    value = match.group("ts").replace(",", ".").replace(" ", "T")
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    if re.search(r"[+-]\d{4}$", value):
+        value = value[:-5] + value[-5:-2] + ":" + value[-2:]
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except Exception:
+        return None
+
+
+def _severity_from_text(text: str) -> str:
+    lowered = text.lower()
+    if any(token in lowered for token in ("critical", "fatal", "traceback", "exception")):
+        return "critical"
+    if any(token in lowered for token in ("error", "failed", "failure")):
+        return "error"
+    if any(token in lowered for token in ("warning", "warn", "degraded", "retry")):
+        return "warning"
+    return "info"
+
+
+def _topic_from_text(text: str) -> str:
+    lowered = text.lower()
+    if any(token in lowered for token in ("drop", "supersede", "backpressure", "queue")):
+        return "eventbus.pressure"
+    if any(token in lowered for token in ("projection", "refresh", "materializ")):
+        return "projection.lifecycle"
+    if any(token in lowered for token in ("yjs", "ydoc", "syncchannel")):
+        return "yjs.sync"
+    if any(token in lowered for token in ("browser", "session", "websocket", "/ws", "/yws")):
+        return "browser.session"
+    if any(token in lowered for token in ("member", "subnet", "node disconnect", "offline")):
+        return "member.connectivity"
+    if any(token in lowered for token in ("rebuild", "runtime", "supervisor", "core update")):
+        return "runtime.lifecycle"
+    return "runtime.log"
+
+
+def _redact_line(text: str, *, max_len: int = 240) -> str:
+    value = re.sub(r"(?i)(token|secret|password|authorization)=\S+", r"\1=<redacted>", text or "")
+    value = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._\-]+", r"\1<redacted>", value)
+    value = re.sub(r"[A-Za-z]:\\[^\s]+", "<path>", value)
+    value = re.sub(r"/(?:[\w.\-]+/){2,}[\w.\-]+", "<path>", value)
+    return value[:max_len]
+
+
+def _log_candidates() -> list[Path]:
+    roots = [
+        Path.cwd() / ".adaos" / "state",
+        Path.cwd() / ".adaos" / "runtime",
+        Path.cwd() / ".adaos" / "logs",
+        _SKILL_ROOT.parent / "infrastate_skill",
+    ]
+    out: list[Path] = []
+    for root in roots:
+        if not root.exists():
+            continue
+        for pattern in ("*.log", "*.jsonl", "*.txt"):
+            out.extend(path for path in root.rglob(pattern) if path.is_file())
+    return sorted({path.resolve() for path in out})[:64]
+
+
+def _read_log_records(path: Path, *, max_lines: int) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    if not path.exists() or not path.is_file():
+        return records
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except Exception:
+        return records
+    base_ts = time.time()
+    for index, line in enumerate(lines[-max_lines:]):
+        if not line.strip():
+            continue
+        ts = _parse_ts(line)
+        if ts is None:
+            ts = base_ts + index * 0.001
+        severity = _severity_from_text(line)
+        topic = _topic_from_text(line)
+        records.append(
+            {
+                "id": f"{path.name}:{index}",
+                "ts": ts,
+                "ts_iso": datetime.fromtimestamp(ts, timezone.utc).isoformat().replace("+00:00", "Z"),
+                "source": "local_log",
+                "source_path": str(path),
+                "topic": topic,
+                "severity": severity,
+                "message": _redact_line(line),
+            }
+        )
+    return records
+
+
+def _records_to_windows(
+    records: list[Mapping[str, Any]],
+    *,
+    window_seconds: int = 60,
+    node_id: str = "local",
+    subnet_id: str = "local",
+    webspace_id: str = "desktop",
+) -> list[dict[str, Any]]:
+    buckets: dict[int, list[Mapping[str, Any]]] = {}
+    size = max(1, int(window_seconds or 60))
+    for record in records:
+        ts = _value(record, "ts")
+        bucket = int(ts // size) * size
+        buckets.setdefault(bucket, []).append(record)
+
+    windows: list[dict[str, Any]] = []
+    for bucket_start in sorted(buckets):
+        items = buckets[bucket_start]
+        topic_counts: dict[str, int] = {}
+        severity_counts: dict[str, int] = {}
+        for item in items:
+            topic = str(item.get("topic") or "runtime.log")
+            severity = str(item.get("severity") or "info")
+            topic_counts[topic] = topic_counts.get(topic, 0) + 1
+            severity_counts[severity] = severity_counts.get(severity, 0) + 1
+        features = {
+            "event_total": len(items),
+            "error_total": severity_counts.get("error", 0) + severity_counts.get("critical", 0),
+            "critical_total": severity_counts.get("critical", 0),
+            "drop_total": topic_counts.get("eventbus.pressure", 0),
+            "supersede_total": sum(1 for item in items if "supersede" in str(item.get("message", "")).lower()),
+            "projection_refresh_total": topic_counts.get("projection.lifecycle", 0),
+            "same_projection_refresh_max": topic_counts.get("projection.lifecycle", 0),
+            "yjs_write_total": topic_counts.get("yjs.sync", 0),
+            "browser_reconnect_total": topic_counts.get("browser.session", 0),
+            "member_disconnect_total": topic_counts.get("member.connectivity", 0),
+            "runtime_rebuild_total": topic_counts.get("runtime.lifecycle", 0),
+        }
+        prediction = _rule_predict({"features": features})
+        windows.append(
+            {
+                "window_id": f"{node_id}:{bucket_start}-{bucket_start + size}",
+                "scope": {
+                    "node_id": node_id,
+                    "subnet_id": subnet_id,
+                    "webspace_id": webspace_id,
+                },
+                "time": {
+                    "start_ts": bucket_start,
+                    "end_ts": bucket_start + size,
+                    "start": datetime.fromtimestamp(bucket_start, timezone.utc).isoformat().replace("+00:00", "Z"),
+                    "end": datetime.fromtimestamp(bucket_start + size, timezone.utc).isoformat().replace("+00:00", "Z"),
+                    "window_seconds": size,
+                },
+                "features": features,
+                "evidence": [
+                    {
+                        "id": item.get("id"),
+                        "topic": item.get("topic"),
+                        "severity": item.get("severity"),
+                        "message": item.get("message"),
+                    }
+                    for item in items[:12]
+                ],
+                "label": {
+                    "incident": False,
+                    "incident_type": "normal",
+                    "severity": "unlabeled",
+                    "reasons": [],
+                    "source": "unlabeled_import",
+                },
+                "baseline_prediction": prediction,
+            }
+        )
+    return windows
+
+
+def _class_distribution_points(windows: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    for window in windows:
+        prediction = window.get("baseline_prediction") if isinstance(window.get("baseline_prediction"), Mapping) else {}
+        label = window.get("label") if isinstance(window.get("label"), Mapping) else {}
+        key = str(prediction.get("incident_type") or label.get("incident_type") or "normal")
+        counts[key] = counts.get(key, 0) + 1
+    return [{"ts": key, "value": value} for key, value in sorted(counts.items())]
+
+
+def _event_volume_points(windows: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    points: list[dict[str, Any]] = []
+    for index, window in enumerate(windows[:48]):
+        features = window.get("features") if isinstance(window.get("features"), Mapping) else {}
+        time_info = window.get("time") if isinstance(window.get("time"), Mapping) else {}
+        label = str(time_info.get("start") or index)
+        points.append({"ts": label[-13:-4] if len(label) > 12 else label, "value": _value(features, "event_total")})
+    return points
+
+
+def _window_rows(windows: list[Mapping[str, Any]], *, limit: int = 32) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for window in windows[:limit]:
+        features = window.get("features") if isinstance(window.get("features"), Mapping) else {}
+        prediction = window.get("baseline_prediction") if isinstance(window.get("baseline_prediction"), Mapping) else _rule_predict(window)
+        rows.append(
+            {
+                "id": window.get("window_id"),
+                "window_id": window.get("window_id"),
+                "events": int(_value(features, "event_total")),
+                "errors": int(_value(features, "error_total")),
+                "prediction": prediction.get("incident_type"),
+                "severity": prediction.get("severity"),
+                "confidence": prediction.get("confidence"),
+            }
+        )
+    return rows
+
+
+def _export_jsonl(windows: list[Mapping[str, Any]], path: Path) -> dict[str, Any]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as fh:
+        for window in windows:
+            fh.write(json.dumps(dict(window), ensure_ascii=False, sort_keys=True) + "\n")
+    return {"path": str(path), "count": len(windows), "bytes": path.stat().st_size}
 
 
 def _window(
@@ -234,6 +471,7 @@ def _metric_rows(result: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def _snapshot() -> dict[str, Any]:
+    demo_windows = _synthetic_windows()
     demo_result = _evaluate(_synthetic_windows())
     return {
         "summary": {
@@ -248,11 +486,13 @@ def _snapshot() -> dict[str, Any]:
         },
         "dataset": {
             "items": [
-                {"id": "windows", "name": "Labeled windows", "current": len(_synthetic_windows()), "target": "500-1000+", "notes": "One row per fixed event window."},
+                {"id": "windows", "name": "Labeled windows", "current": len(demo_windows), "target": "500-1000+", "notes": "One row per fixed event window."},
                 {"id": "classes", "name": "Classes", "current": len(_CLASSES), "target": "6+", "notes": "normal plus incident classes."},
                 {"id": "features", "name": "Feature families", "current": 9, "target": "eventbus/projection/Yjs/device/runtime", "notes": "Aggregated numeric features for baseline and ML models."},
+                {"id": "logs", "name": "Local log import", "current": len(_log_candidates()), "target": "explicit paths plus local candidates", "notes": "Core remains unchanged; this skill only reads local files when asked."},
             ]
         },
+        "windows": {"items": _window_rows(demo_windows)},
         "metrics": {"items": _metric_rows(demo_result)},
         "per_class": {"items": demo_result["per_class"]},
         "chart": {
@@ -264,6 +504,16 @@ def _snapshot() -> dict[str, Any]:
                 {"ts": "critical recall", "value": demo_result["critical_recall"]},
                 {"ts": "reason hit", "value": demo_result["top_reason_hit_rate"]},
             ],
+        },
+        "event_volume_chart": {
+            "title": "Event volume by window",
+            "unit": "events",
+            "points": _event_volume_points(demo_windows),
+        },
+        "class_distribution_chart": {
+            "title": "Baseline class distribution",
+            "unit": "windows",
+            "points": _class_distribution_points(demo_windows),
         },
         "experiments": {
             "items": [
@@ -310,6 +560,24 @@ def _publish_result(result: Mapping[str, Any], *, webspace_id: str) -> None:
         pass
 
 
+def _publish_dataset_result(result: Mapping[str, Any], *, webspace_id: str) -> None:
+    payload = [
+        {
+            "id": "dataset-windows",
+            "title": f"Built {result.get('window_count')} event windows",
+            "description": (
+                f"records={result.get('record_count')} window_seconds={result.get('window_seconds')} "
+                "baseline predictions are advisory until manually labeled"
+            ),
+            "content": result,
+        }
+    ]
+    try:
+        stream_publish(_RESULTS_RECEIVER, payload, _meta={"webspace_id": webspace_id})
+    except Exception:
+        pass
+
+
 @tool("get_lab_snapshot")
 def get_lab_snapshot(payload: Mapping[str, Any] | None = None, **_: Any) -> dict[str, Any]:
     _ = payload
@@ -340,6 +608,84 @@ def evaluate_windows(payload: Mapping[str, Any] | None = None, **_: Any) -> dict
     result = _evaluate(windows)
     _publish_result(result, webspace_id=_webspace_id_from_payload(body))
     return {"ok": True, "result": result}
+
+
+@tool("import_local_logs")
+def import_local_logs(payload: Mapping[str, Any] | None = None, **_: Any) -> dict[str, Any]:
+    body = payload if isinstance(payload, Mapping) else {}
+    max_lines = int(_value(body, "max_lines") or 500)
+    raw_path = str(body.get("path") or "").strip()
+    paths = [Path(raw_path)] if raw_path else _log_candidates()[:8]
+    records: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    for path in paths:
+        rows = _read_log_records(path, max_lines=max_lines)
+        if rows:
+            records.extend(rows)
+            sources.append({"path": str(path), "records": len(rows)})
+    return {
+        "ok": True,
+        "records": records,
+        "summary": {
+            "source_count": len(sources),
+            "record_count": len(records),
+            "sources": sources,
+            "imported_at": _now_iso(),
+        },
+    }
+
+
+@tool("build_event_windows")
+def build_event_windows(payload: Mapping[str, Any] | None = None, **_: Any) -> dict[str, Any]:
+    body = payload if isinstance(payload, Mapping) else {}
+    raw_records = body.get("records")
+    if isinstance(raw_records, list):
+        records = [item for item in raw_records if isinstance(item, Mapping)]
+    else:
+        imported = import_local_logs(body)
+        records = [item for item in imported.get("records", []) if isinstance(item, Mapping)]
+    window_seconds = int(_value(body, "window_seconds") or 60)
+    windows = _records_to_windows(
+        records,
+        window_seconds=window_seconds,
+        node_id=str(body.get("node_id") or "local"),
+        subnet_id=str(body.get("subnet_id") or "local"),
+        webspace_id=_webspace_id_from_payload(body),
+    )
+    result = {
+        "window_count": len(windows),
+        "record_count": len(records),
+        "window_seconds": window_seconds,
+        "windows": windows,
+        "rows": _window_rows(windows),
+        "event_volume_chart": {
+            "title": "Event volume by window",
+            "unit": "events",
+            "points": _event_volume_points(windows),
+        },
+        "class_distribution_chart": {
+            "title": "Baseline class distribution",
+            "unit": "windows",
+            "points": _class_distribution_points(windows),
+        },
+        "built_at": _now_iso(),
+    }
+    _publish_dataset_result(result, webspace_id=_webspace_id_from_payload(body))
+    return {"ok": True, "result": result}
+
+
+@tool("export_event_windows_jsonl")
+def export_event_windows_jsonl(payload: Mapping[str, Any] | None = None, **_: Any) -> dict[str, Any]:
+    body = payload if isinstance(payload, Mapping) else {}
+    raw_windows = body.get("windows")
+    if isinstance(raw_windows, list):
+        windows = [item for item in raw_windows if isinstance(item, Mapping)]
+    else:
+        windows = build_event_windows(body)["result"]["windows"]
+    raw_path = str(body.get("path") or "").strip()
+    path = Path(raw_path) if raw_path else _DEFAULT_EXPORT_PATH
+    export = _export_jsonl(windows, path)
+    return {"ok": True, "export": export}
 
 
 @subscribe("webio.stream.snapshot.requested")

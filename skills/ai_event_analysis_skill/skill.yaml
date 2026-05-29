@@ -1,5 +1,5 @@
 name: ai_event_analysis_skill
-version: 0.1.1
+version: 0.2.1
 description: Research skill for measurable AI/ML analysis of AdaOS operational event
   windows.
 runtime:
@@ -26,6 +26,16 @@ data_projections:
   targets:
   - backend: yjs
     path: data/ai_event_analysis/experiments
+- scope: webspace
+  slot: ai_event_analysis.windows
+  targets:
+  - backend: yjs
+    path: data/ai_event_analysis/windows
+- scope: webspace
+  slot: ai_event_analysis.charts
+  targets:
+  - backend: yjs
+    path: data/ai_event_analysis/charts
 events:
   subscribe:
   - webio.stream.snapshot.requested
@@ -89,5 +99,79 @@ tools:
         type: boolean
       result:
         type: object
-updated_at: '2026-05-29T08:40:41+00:00'
+- name: import_local_logs
+  description: Import and redact local AdaOS log lines into event evidence records.
+  entry: handlers.main:import_local_logs
+  input_schema:
+    type: object
+    properties:
+      path:
+        type: string
+      max_lines:
+        type: integer
+  output_schema:
+    type: object
+    required:
+    - ok
+    - records
+    - summary
+    properties:
+      ok:
+        type: boolean
+      records:
+        type: array
+      summary:
+        type: object
+- name: build_event_windows
+  description: Build event-window records from imported evidence records or local
+    logs.
+  entry: handlers.main:build_event_windows
+  input_schema:
+    type: object
+    properties:
+      records:
+        type: array
+        items:
+          type: object
+      window_seconds:
+        type: integer
+      node_id:
+        type: string
+      subnet_id:
+        type: string
+      webspace_id:
+        type: string
+  output_schema:
+    type: object
+    required:
+    - ok
+    - result
+    properties:
+      ok:
+        type: boolean
+      result:
+        type: object
+- name: export_event_windows_jsonl
+  description: Export event-window records as a JSONL dataset file.
+  entry: handlers.main:export_event_windows_jsonl
+  input_schema:
+    type: object
+    properties:
+      windows:
+        type: array
+        items:
+          type: object
+      path:
+        type: string
+  output_schema:
+    type: object
+    required:
+    - ok
+    - export
+    properties:
+      ok:
+        type: boolean
+      export:
+        type: object
+updated_at: '2026-05-29T09:22:24+00:00'
 

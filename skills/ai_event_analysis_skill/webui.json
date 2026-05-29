@@ -138,6 +138,10 @@
                     "label": "Dataset"
                   },
                   {
+                    "id": "windows",
+                    "label": "Windows"
+                  },
+                  {
                     "id": "metrics",
                     "label": "Metrics"
                   },
@@ -247,6 +251,54 @@
               }
             },
             {
+              "id": "ai-event-analysis-windows",
+              "type": "ui.table",
+              "area": "main",
+              "title": "Event windows",
+              "visibleIf": "$state.aiEventAnalysisTab === 'windows'",
+              "dataSource": {
+                "kind": "y",
+                "path": "data/ai_event_analysis/windows"
+              },
+              "inputs": {
+                "emptyText": "No event windows yet",
+                "columns": [
+                  {
+                    "key": "window_id",
+                    "label": "Window"
+                  },
+                  {
+                    "key": "events",
+                    "label": "Events",
+                    "width": "80px",
+                    "mono": true
+                  },
+                  {
+                    "key": "errors",
+                    "label": "Errors",
+                    "width": "80px",
+                    "mono": true
+                  },
+                  {
+                    "key": "prediction",
+                    "label": "Baseline prediction",
+                    "width": "190px"
+                  },
+                  {
+                    "key": "severity",
+                    "label": "Severity",
+                    "width": "100px"
+                  },
+                  {
+                    "key": "confidence",
+                    "label": "Confidence",
+                    "width": "110px",
+                    "mono": true
+                  }
+                ]
+              }
+            },
+            {
               "id": "ai-event-analysis-per-class",
               "type": "ui.table",
               "area": "main",
@@ -341,6 +393,38 @@
               }
             },
             {
+              "id": "ai-event-analysis-volume-chart",
+              "type": "visual.metricChart",
+              "area": "right",
+              "title": "Event volume",
+              "visibleIf": "$state.aiEventAnalysisTab === 'windows' || $state.aiEventAnalysisTab === 'dataset'",
+              "dataSource": {
+                "kind": "y",
+                "path": "data/ai_event_analysis/event_volume_chart"
+              },
+              "inputs": {
+                "xKey": "ts",
+                "yKey": "value",
+                "emptyText": "No event-window volume data"
+              }
+            },
+            {
+              "id": "ai-event-analysis-class-chart",
+              "type": "visual.metricChart",
+              "area": "right",
+              "title": "Class distribution",
+              "visibleIf": "$state.aiEventAnalysisTab === 'windows' || $state.aiEventAnalysisTab === 'metrics'",
+              "dataSource": {
+                "kind": "y",
+                "path": "data/ai_event_analysis/class_distribution_chart"
+              },
+              "inputs": {
+                "xKey": "ts",
+                "yKey": "value",
+                "emptyText": "No class distribution data"
+              }
+            },
+            {
               "id": "ai-event-analysis-actions",
               "type": "input.commandBar",
               "area": "right",
@@ -352,6 +436,14 @@
                   {
                     "id": "run_demo",
                     "label": "Run demo baseline"
+                  },
+                  {
+                    "id": "build_windows",
+                    "label": "Build windows"
+                  },
+                  {
+                    "id": "export_jsonl",
+                    "label": "Export JSONL"
                   }
                 ]
               },
@@ -360,6 +452,23 @@
                   "on": "click:run_demo",
                   "type": "callSkill",
                   "target": "ai_event_analysis_skill.run_demo_evaluation",
+                  "params": {
+                    "webspace_id": "$runtime.webspace_id"
+                  }
+                },
+                {
+                  "on": "click:build_windows",
+                  "type": "callSkill",
+                  "target": "ai_event_analysis_skill.build_event_windows",
+                  "params": {
+                    "webspace_id": "$runtime.webspace_id",
+                    "window_seconds": 60
+                  }
+                },
+                {
+                  "on": "click:export_jsonl",
+                  "type": "callSkill",
+                  "target": "ai_event_analysis_skill.export_event_windows_jsonl",
                   "params": {
                     "webspace_id": "$runtime.webspace_id"
                   }
@@ -452,6 +561,28 @@
           }
         ]
       },
+      "windows": {
+        "items": [
+          {
+            "id": "demo-001",
+            "window_id": "demo-001",
+            "events": 18,
+            "errors": 0,
+            "prediction": "normal",
+            "severity": "info",
+            "confidence": 0.68
+          },
+          {
+            "id": "demo-004",
+            "window_id": "demo-004",
+            "events": 140,
+            "errors": 3,
+            "prediction": "projection_refresh_storm",
+            "severity": "warning",
+            "confidence": 0.95
+          }
+        ]
+      },
       "metrics": {
         "items": [
           {
@@ -484,6 +615,42 @@
         "title": "Baseline quality",
         "unit": "score",
         "points": []
+      },
+      "event_volume_chart": {
+        "title": "Event volume by window",
+        "unit": "events",
+        "points": [
+          {
+            "ts": "demo-001",
+            "value": 18
+          },
+          {
+            "ts": "demo-004",
+            "value": 140
+          },
+          {
+            "ts": "demo-010",
+            "value": 420
+          }
+        ]
+      },
+      "class_distribution_chart": {
+        "title": "Baseline class distribution",
+        "unit": "windows",
+        "points": [
+          {
+            "ts": "normal",
+            "value": 3
+          },
+          {
+            "ts": "projection",
+            "value": 2
+          },
+          {
+            "ts": "eventbus",
+            "value": 2
+          }
+        ]
       },
       "experiments": {
         "items": [
