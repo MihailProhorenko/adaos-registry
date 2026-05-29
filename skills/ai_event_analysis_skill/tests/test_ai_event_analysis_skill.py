@@ -37,6 +37,7 @@ def test_manifest_declares_measurable_tools_and_stream_wakeup() -> None:
         "evaluate_windows",
         "import_local_logs",
         "build_event_windows",
+        "analyze_local_logs",
         "export_event_windows_jsonl",
     }
     assert manifest["lifecycle"]["rehydrate"] == "rehydrate"
@@ -70,6 +71,7 @@ def test_webui_declares_app_widget_and_results_receiver() -> None:
     assert any(button["id"] == "windows" for button in tabs["inputs"]["buttons"])
     actions = next(widget for widget in widgets if widget["id"] == "ai-event-analysis-actions")
     assert any(button["id"] == "refresh_snapshot" for button in actions["inputs"]["buttons"])
+    assert any(button["id"] == "analyze_logs" for button in actions["inputs"]["buttons"])
 
 
 def test_refresh_snapshot_projects_all_first_paint_sections(monkeypatch) -> None:
@@ -178,9 +180,12 @@ def test_local_log_import_builds_redacted_event_windows(tmp_path: Path) -> None:
     built = mod.build_event_windows({"records": imported["records"], "window_seconds": 60})
     windows = built["result"]["windows"]
     assert built["result"]["window_count"] == 1
+    assert built["result"]["baseline_result"]["window_count"] == 1
+    assert built["result"]["label_source"] == "weak_log_label"
     assert windows[0]["features"]["event_total"] == 3
     assert windows[0]["features"]["projection_refresh_total"] == 1
     assert windows[0]["features"]["yjs_write_total"] == 1
+    assert windows[0]["label"]["source"] == "weak_log_label"
 
 
 def test_event_window_export_writes_jsonl(tmp_path: Path) -> None:

@@ -1,5 +1,5 @@
 name: ai_event_analysis_skill
-version: 0.2.12
+version: 0.2.13
 description: Research skill for measurable AI/ML analysis of AdaOS operational event
   windows.
 runtime:
@@ -234,7 +234,7 @@ tools:
         type: object
 - name: build_event_windows
   description: Build event-window records from imported evidence records or local
-    logs.
+    logs and evaluate the rule baseline against weak log labels.
   entry: handlers.main:build_event_windows
   input_schema:
     type: object
@@ -243,6 +243,35 @@ tools:
         type: array
         items:
           type: object
+      window_seconds:
+        type: integer
+      node_id:
+        type: string
+      subnet_id:
+        type: string
+      webspace_id:
+        type: string
+  output_schema:
+    type: object
+    required:
+    - ok
+    - result
+    properties:
+      ok:
+        type: boolean
+      result:
+        type: object
+- name: analyze_local_logs
+  description: Import local AdaOS logs, build event windows, project tables and weak-label
+    baseline metrics.
+  entry: handlers.main:analyze_local_logs
+  input_schema:
+    type: object
+    properties:
+      path:
+        type: string
+      max_lines:
+        type: integer
       window_seconds:
         type: integer
       node_id:
@@ -283,5 +312,5 @@ tools:
         type: boolean
       export:
         type: object
-updated_at: '2026-05-29T12:17:34+00:00'
+updated_at: '2026-05-29T12:35:20+00:00'
 

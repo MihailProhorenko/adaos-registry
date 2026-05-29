@@ -439,7 +439,11 @@
                   },
                   {
                     "id": "refresh_snapshot",
-                    "label": "Refresh snapshot"
+                    "label": "Refresh demo"
+                  },
+                  {
+                    "id": "analyze_logs",
+                    "label": "Analyze real logs"
                   },
                   {
                     "id": "build_windows",
@@ -466,6 +470,15 @@
                   "target": "ai_event_analysis_skill.refresh_snapshot",
                   "params": {
                     "webspace_id": "$runtime.webspace_id"
+                  }
+                },
+                {
+                  "on": "click:analyze_logs",
+                  "type": "callSkill",
+                  "target": "ai_event_analysis_skill.analyze_local_logs",
+                  "params": {
+                    "webspace_id": "$runtime.webspace_id",
+                    "window_seconds": 60
                   }
                 },
                 {

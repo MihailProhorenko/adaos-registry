@@ -57,6 +57,19 @@ def _ensure_projection_rules_loaded() -> None:
     global _PROJECTION_RULES_LOADED
     if _PROJECTION_RULES_LOADED:
         return
+    try:
+        from adaos.services.agent_context import get_ctx
+
+        ctx = get_ctx()
+        registry = getattr(ctx, "projections", None)
+        load_entries = getattr(registry, "load_entries", None)
+        if not callable(load_entries):
+            return
+        load_entries(_skill_projection_entries())
+        _PROJECTION_RULES_LOADED = True
+    except Exception:
+        # Test and validation contexts may not bootstrap AgentContext.
+        return
 
 
 def _skill_projection_entries() -> list[dict[str, Any]]:
@@ -98,22 +111,6 @@ def _apply_projection(slot: str, value: Any, *, webspace_id: str) -> None:
 
     _ensure_projection_rules_loaded()
     ctx_subnet.set(slot, value, webspace_id=webspace_id)
-    try:
-        from adaos.services.agent_context import get_ctx
-        import yaml
-
-        ctx = get_ctx()
-        registry = getattr(ctx, "projections", None)
-        load_entries = getattr(registry, "load_entries", None)
-        if not callable(load_entries):
-            return
-        manifest = yaml.safe_load((_SKILL_ROOT / "skill.yaml").read_text(encoding="utf-8")) or {}
-        entries = manifest.get("data_projections") or []
-        load_entries(entries if isinstance(entries, list) else [])
-        _PROJECTION_RULES_LOADED = True
-    except Exception:
-        # Test and validation contexts may not bootstrap AgentContext.
-        return
 
 
 def _webspace_id_from_payload(payload: Mapping[str, Any] | None) -> str:
@@ -327,6 +324,7 @@ def _records_to_windows(
             "runtime_rebuild_total": topic_counts.get("runtime.lifecycle", 0),
         }
         prediction = _rule_predict({"features": features})
+        weak_label = _weak_label(features, topic_counts=topic_counts, severity_counts=severity_counts)
         windows.append(
             {
                 "window_id": f"{node_id}:{bucket_start}-{bucket_start + size}",
@@ -352,17 +350,58 @@ def _records_to_windows(
                     }
                     for item in items[:_MAX_EVIDENCE_PER_WINDOW]
                 ],
-                "label": {
-                    "incident": False,
-                    "incident_type": "normal",
-                    "severity": "unlabeled",
-                    "reasons": [],
-                    "source": "unlabeled_import",
-                },
+                "label": weak_label,
                 "baseline_prediction": prediction,
             }
         )
     return windows
+
+
+def _weak_label(
+    features: Mapping[str, Any],
+    *,
+    topic_counts: Mapping[str, int],
+    severity_counts: Mapping[str, int],
+) -> dict[str, Any]:
+    error_total = int(_value(features, "error_total"))
+    critical_total = int(_value(features, "critical_total"))
+    event_total = int(_value(features, "event_total"))
+
+    incident_type = "normal"
+    reasons: list[str] = []
+    if topic_counts.get("eventbus.pressure", 0) >= 3 or _value(features, "supersede_total") >= 8:
+        incident_type = "eventbus_backpressure"
+        reasons = ["eventbus.pressure", "supersede_total"]
+    elif topic_counts.get("projection.lifecycle", 0) >= 8:
+        incident_type = "projection_refresh_storm"
+        reasons = ["projection.lifecycle"]
+    elif topic_counts.get("yjs.sync", 0) >= 5:
+        incident_type = "yjs_write_pressure"
+        reasons = ["yjs.sync"]
+    elif topic_counts.get("browser.session", 0) >= 4:
+        incident_type = "browser_session_instability"
+        reasons = ["browser.session"]
+    elif topic_counts.get("member.connectivity", 0) >= 2:
+        incident_type = "member_node_disconnect"
+        reasons = ["member.connectivity"]
+    elif topic_counts.get("runtime.lifecycle", 0) >= 4:
+        incident_type = "runtime_rebuild_churn"
+        reasons = ["runtime.lifecycle"]
+    elif error_total >= 4 or critical_total >= 1 or event_total >= 180:
+        incident_type = str(_rule_predict({"features": features}).get("incident_type") or "normal")
+        reasons = _top_feature_names(features)
+
+    severity = "info"
+    if incident_type != "normal":
+        severity = "critical" if critical_total > 0 or error_total >= 8 else "warning"
+    return {
+        "incident": incident_type != "normal",
+        "incident_type": incident_type,
+        "severity": severity,
+        "reasons": reasons,
+        "source": "weak_log_label",
+        "label_quality": "weak",
+    }
 
 
 def _class_distribution_points(windows: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -396,6 +435,7 @@ def _window_rows(windows: list[Mapping[str, Any]], *, limit: int = 32) -> list[d
                 "window_id": window.get("window_id"),
                 "events": int(_value(features, "event_total")),
                 "errors": int(_value(features, "error_total")),
+                "label": (window.get("label") or {}).get("incident_type") if isinstance(window.get("label"), Mapping) else "",
                 "prediction": prediction.get("incident_type"),
                 "severity": prediction.get("severity"),
                 "confidence": prediction.get("confidence"),
@@ -437,6 +477,7 @@ def _compact_dataset_result(result: Mapping[str, Any]) -> dict[str, Any]:
         "rows": list(result.get("rows") or [])[:_MAX_STREAM_ROWS],
         "event_volume_chart": compact_chart(result.get("event_volume_chart")),
         "class_distribution_chart": compact_chart(result.get("class_distribution_chart")),
+        "baseline": _compact_evaluation_result(result.get("baseline_result") or {}) if isinstance(result.get("baseline_result"), Mapping) else {},
         "built_at": result.get("built_at"),
     }
 
@@ -648,6 +689,18 @@ def _metric_rows(result: Mapping[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _dataset_rows_for_real_logs(result: Mapping[str, Any]) -> list[dict[str, Any]]:
+    baseline = result.get("baseline_result") if isinstance(result.get("baseline_result"), Mapping) else {}
+    assert isinstance(baseline, Mapping)
+    return [
+        {"id": "windows", "name": "Event windows", "current": result.get("window_count"), "target": "500-1000+", "notes": "Built from local AdaOS logs."},
+        {"id": "records", "name": "Evidence records", "current": result.get("record_count"), "target": "redacted operational evidence", "notes": "Raw log lines stay local; projected rows are compact."},
+        {"id": "window_seconds", "name": "Window size", "current": result.get("window_seconds"), "target": "60/300/900 seconds", "notes": "Tune per experiment."},
+        {"id": "label_source", "name": "Label source", "current": "weak_log_label", "target": "manual labels", "notes": "Current metrics are weak-label estimates, not ground truth."},
+        {"id": "macro_f1", "name": "Weak-label Macro-F1", "current": baseline.get("macro_f1"), "target": ">= 0.75", "notes": "Agreement between rule baseline and weak labels."},
+    ]
+
+
 def _snapshot() -> dict[str, Any]:
     demo_windows = _synthetic_windows()
     demo_result = _evaluate(_synthetic_windows())
@@ -748,6 +801,7 @@ def _project_evaluation_result(result: Mapping[str, Any], *, webspace_id: str) -
             "buttons": [
                 {"id": "open", "label": "Open"},
                 {"id": "run_demo", "label": "Run demo evaluation"},
+                {"id": "analyze_logs", "label": "Analyze real logs"},
             ],
         },
         "metrics": {"items": _metric_rows(result)},
@@ -766,19 +820,47 @@ def _project_evaluation_result(result: Mapping[str, Any], *, webspace_id: str) -
     return _project_sections(sections, webspace_id=webspace_id)
 
 
-def _project_windows_result(result: Mapping[str, Any], *, webspace_id: str) -> dict[str, Any]:
+def _project_windows_result(result: Mapping[str, Any], *, webspace_id: str, include_metrics: bool = False) -> dict[str, Any]:
+    baseline = result.get("baseline_result") if isinstance(result.get("baseline_result"), Mapping) else {}
     sections = {
         "windows": {"items": list(result.get("rows") or [])},
         "event_volume_chart": result.get("event_volume_chart") or {"title": "Event volume by window", "unit": "events", "points": []},
         "class_distribution_chart": result.get("class_distribution_chart") or {"title": "Baseline class distribution", "unit": "windows", "points": []},
         "dataset": {
-            "items": [
-                {"id": "windows", "name": "Event windows", "current": result.get("window_count"), "target": "500-1000+", "notes": "Built from local logs or imported records."},
-                {"id": "records", "name": "Evidence records", "current": result.get("record_count"), "target": "redacted operational evidence", "notes": "Raw logs stay out of Yjs."},
-                {"id": "window_seconds", "name": "Window size", "current": result.get("window_seconds"), "target": "60/300/900 seconds", "notes": "Tune per experiment."},
-            ]
+            "items": _dataset_rows_for_real_logs(result)
         },
     }
+    if include_metrics and baseline:
+        sections.update(
+            {
+                "summary": {
+                    "label": "AI Event Analysis",
+                    "value": f"{_value(baseline, 'macro_f1'):.3f}",
+                    "subtitle": "weak-label log baseline Macro-F1",
+                    "description": (
+                        f"real-log windows={result.get('window_count')} records={result.get('record_count')} "
+                        "labels=weak_log_label"
+                    ),
+                    "buttons": [
+                        {"id": "open", "label": "Open"},
+                        {"id": "run_demo", "label": "Run demo evaluation"},
+                        {"id": "analyze_logs", "label": "Analyze real logs"},
+                    ],
+                },
+                "metrics": {"items": _metric_rows(baseline)},
+                "per_class": {"items": list(baseline.get("per_class") or [])},
+                "chart": {
+                    "title": "Weak-label baseline quality",
+                    "unit": "score",
+                    "points": [
+                        {"ts": "accuracy", "value": baseline.get("accuracy")},
+                        {"ts": "macro-F1", "value": baseline.get("macro_f1")},
+                        {"ts": "critical recall", "value": baseline.get("critical_recall")},
+                        {"ts": "reason hit", "value": baseline.get("top_reason_hit_rate")},
+                    ],
+                },
+            }
+        )
     return _project_sections(sections, webspace_id=webspace_id)
 
 
@@ -811,13 +893,15 @@ def _publish_result(result: Mapping[str, Any], *, webspace_id: str) -> None:
 
 def _publish_dataset_result(result: Mapping[str, Any], *, webspace_id: str) -> None:
     compact = _compact_dataset_result(result)
+    baseline = compact.get("baseline") if isinstance(compact.get("baseline"), Mapping) else {}
     payload = [
         {
             "id": "dataset-windows",
             "title": f"Built {result.get('window_count')} event windows",
             "description": (
                 f"records={result.get('record_count')} window_seconds={result.get('window_seconds')} "
-                "baseline predictions are advisory until manually labeled"
+                f"weak_macro_f1={baseline.get('macro_f1') if baseline else 'n/a'} "
+                "labels are weak until manually reviewed"
             ),
             "content": compact,
         }
@@ -921,10 +1005,13 @@ def build_event_windows(payload: Mapping[str, Any] | None = None, **_: Any) -> d
     )
     include_windows = bool(body.get("include_windows")) or isinstance(raw_records, list)
     result_windows = windows[:_MAX_TOOL_WINDOWS] if include_windows else []
+    baseline_result = _evaluate(windows)
     result = {
         "window_count": len(windows),
         "record_count": len(records),
         "window_seconds": window_seconds,
+        "label_source": "weak_log_label",
+        "baseline_result": baseline_result,
         "windows": result_windows,
         "windows_truncated": include_windows and len(windows) > len(result_windows),
         "rows": _window_rows(windows),
@@ -940,9 +1027,16 @@ def build_event_windows(payload: Mapping[str, Any] | None = None, **_: Any) -> d
         },
         "built_at": _now_iso(),
     }
-    _project_windows_result(result, webspace_id=_webspace_id_from_payload(body))
+    _project_windows_result(result, webspace_id=_webspace_id_from_payload(body), include_metrics=True)
     _publish_dataset_result(result, webspace_id=_webspace_id_from_payload(body))
     return {"ok": True, "result": result}
+
+
+@tool("analyze_local_logs")
+def analyze_local_logs(payload: Mapping[str, Any] | None = None, **_: Any) -> dict[str, Any]:
+    body = dict(payload) if isinstance(payload, Mapping) else {}
+    body.setdefault("window_seconds", 60)
+    return build_event_windows(body)
 
 
 @tool("export_event_windows_jsonl")

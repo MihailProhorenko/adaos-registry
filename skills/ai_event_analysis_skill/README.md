@@ -117,6 +117,8 @@ See [Dataset Schema](docs/dataset-schema.md).
   member disconnects, and runtime rebuild churn.
 - [x] Attach top redacted evidence lines to each window.
 - [x] Add baseline prediction to every imported unlabeled window.
+- [x] Add weak labels for real-log windows so the current rule baseline can be
+  measured before manual review exists.
 - [ ] Add burst features such as max/sec, p95/sec, and repeated topic streaks.
 - [ ] Add sequence features for ordered event-topic patterns.
 - [ ] Add topology features for hub/member/subnet role.
@@ -139,6 +141,8 @@ See [Dataset Schema](docs/dataset-schema.md).
 - [x] Compute accuracy, macro-F1, per-class precision/recall/F1, false positive
   rate, critical recall, detection delay, and top-reason hit rate.
 - [x] Publish evaluation results through an existing stream receiver.
+- [x] Project real-log weak-label metrics into the same Web UI tables and
+  charts while keeping the synthetic demo available.
 - [ ] Add threshold tuning for the rule baseline.
 - [ ] Add train/test split support for imported datasets.
 
