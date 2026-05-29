@@ -37,6 +37,7 @@ _CLASSES = [
     "runtime_rebuild_churn",
 ]
 _PROJECTION_FINGERPRINTS: dict[str, str] = {}
+_PROJECTION_RULES_LOADED = False
 
 
 class _LazyCtxSubnet:
@@ -47,6 +48,28 @@ class _LazyCtxSubnet:
 
 
 ctx_subnet = _LazyCtxSubnet()
+
+
+def _ensure_projection_rules_loaded() -> None:
+    global _PROJECTION_RULES_LOADED
+    if _PROJECTION_RULES_LOADED:
+        return
+    try:
+        from adaos.services.agent_context import get_ctx
+        import yaml
+
+        ctx = get_ctx()
+        registry = getattr(ctx, "projections", None)
+        load_entries = getattr(registry, "load_entries", None)
+        if not callable(load_entries):
+            return
+        manifest = yaml.safe_load((_SKILL_ROOT / "skill.yaml").read_text(encoding="utf-8")) or {}
+        entries = manifest.get("data_projections") or []
+        load_entries(entries if isinstance(entries, list) else [])
+        _PROJECTION_RULES_LOADED = True
+    except Exception:
+        # Test and validation contexts may not bootstrap AgentContext.
+        return
 
 
 def _webspace_id_from_payload(payload: Mapping[str, Any] | None) -> str:
@@ -75,6 +98,7 @@ def _set_projection_if_changed(slot: str, value: Any, *, webspace_id: str, force
     fingerprint = _fingerprint(value)
     if not force and _PROJECTION_FINGERPRINTS.get(key) == fingerprint:
         return False
+    _ensure_projection_rules_loaded()
     ctx_subnet.set(slot, value, webspace_id=webspace_id)
     _PROJECTION_FINGERPRINTS[key] = fingerprint
     return True

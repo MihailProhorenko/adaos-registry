@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-05-29T12:02:56+00:00",
+  "updated_at": "2026-05-29T12:14:15+00:00",
   "skills": [
     {
       "kind": "skill",
@@ -28,8 +28,8 @@
       "kind": "skill",
       "id": "ai_event_analysis_skill",
       "name": "ai_event_analysis_skill",
-      "version": "0.2.10",
-      "updated_at": "2026-05-29T12:02:56+00:00",
+      "version": "0.2.11",
+      "updated_at": "2026-05-29T12:14:15+00:00",
       "path": "skills/ai_event_analysis_skill",
       "manifest": "skills/ai_event_analysis_skill/skill.yaml",
       "source": {
