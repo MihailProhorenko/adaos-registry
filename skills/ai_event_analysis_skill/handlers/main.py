@@ -70,17 +70,17 @@ def _fingerprint(value: Any) -> str:
         return repr(value)
 
 
-def _set_projection_if_changed(slot: str, value: Any, *, webspace_id: str) -> bool:
+def _set_projection_if_changed(slot: str, value: Any, *, webspace_id: str, force: bool = False) -> bool:
     key = f"{webspace_id}:{slot}"
     fingerprint = _fingerprint(value)
-    if _PROJECTION_FINGERPRINTS.get(key) == fingerprint:
+    if not force and _PROJECTION_FINGERPRINTS.get(key) == fingerprint:
         return False
-    _PROJECTION_FINGERPRINTS[key] = fingerprint
     ctx_subnet.set(slot, value, webspace_id=webspace_id)
+    _PROJECTION_FINGERPRINTS[key] = fingerprint
     return True
 
 
-def _project_sections(sections: Mapping[str, Any], *, webspace_id: str) -> dict[str, Any]:
+def _project_sections(sections: Mapping[str, Any], *, webspace_id: str, force: bool = False) -> dict[str, Any]:
     slot_by_section = {
         "summary": "ai_event_analysis.summary",
         "task": "ai_event_analysis.task",
@@ -104,7 +104,7 @@ def _project_sections(sections: Mapping[str, Any], *, webspace_id: str) -> dict[
             if section not in sections:
                 continue
             try:
-                if _set_projection_if_changed(slot, sections[section], webspace_id=webspace_id):
+                if _set_projection_if_changed(slot, sections[section], webspace_id=webspace_id, force=force):
                     written.append(section)
             except Exception:
                 continue
@@ -664,8 +664,8 @@ def _snapshot() -> dict[str, Any]:
     }
 
 
-def _project_lab_snapshot(*, webspace_id: str = "desktop") -> dict[str, Any]:
-    return _project_sections(_snapshot(), webspace_id=webspace_id)
+def _project_lab_snapshot(*, webspace_id: str = "desktop", force: bool = False) -> dict[str, Any]:
+    return _project_sections(_snapshot(), webspace_id=webspace_id, force=force)
 
 
 def _project_evaluation_result(result: Mapping[str, Any], *, webspace_id: str) -> dict[str, Any]:
@@ -765,14 +765,15 @@ def _publish_dataset_result(result: Mapping[str, Any], *, webspace_id: str) -> N
 def get_lab_snapshot(payload: Mapping[str, Any] | None = None, **_: Any) -> dict[str, Any]:
     body = payload if isinstance(payload, Mapping) else {}
     if bool(body.get("project")):
-        _project_lab_snapshot(webspace_id=_webspace_id_from_payload(body))
+        _project_lab_snapshot(webspace_id=_webspace_id_from_payload(body), force=bool(body.get("force")))
     return {"ok": True, "snapshot": _snapshot()}
 
 
 @tool("refresh_snapshot")
 def refresh_snapshot(payload: Mapping[str, Any] | None = None, **_: Any) -> dict[str, Any]:
-    webspace_id = _webspace_id_from_payload(payload if isinstance(payload, Mapping) else {})
-    projected = _project_lab_snapshot(webspace_id=webspace_id)
+    body = payload if isinstance(payload, Mapping) else {}
+    webspace_id = _webspace_id_from_payload(body)
+    projected = _project_lab_snapshot(webspace_id=webspace_id, force=True)
     return {"ok": True, "projected": projected}
 
 

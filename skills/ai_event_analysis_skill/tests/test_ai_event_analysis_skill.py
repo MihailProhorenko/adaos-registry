@@ -105,6 +105,11 @@ def test_refresh_snapshot_projects_all_first_paint_sections(monkeypatch) -> None
     assert next(value for slot, value, _ in written if slot == "ai_event_analysis.dataset")["items"]
     assert next(value for slot, value, _ in written if slot == "ai_event_analysis.task")["items"]
 
+    written.clear()
+    result = mod.refresh_snapshot({"webspace_id": "desktop"})
+    assert result["projected"]["written"]
+    assert written
+
 
 def test_webspace_template_literal_falls_back_to_desktop() -> None:
     mod = _load_module()
