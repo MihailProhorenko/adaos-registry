@@ -439,6 +439,7 @@ def _build_registered_stream_payload(context: ProjectionContext) -> Any:
     return _build_stream_payload_for_receiver(
         str(context.receiver or ""),
         context.webspace_id,
+        selected_node_id=context.node_id,
     )
 
 
@@ -7191,7 +7192,12 @@ def _projection_sections_from_snapshot(snapshot: dict[str, Any]) -> dict[str, An
     return sections
 
 
-def _build_stream_payload_for_receiver(receiver: str, webspace_id: str | None = None) -> Any:
+def _build_stream_payload_for_receiver(
+    receiver: str,
+    webspace_id: str | None = None,
+    *,
+    selected_node_id: str | None = None,
+) -> Any:
     token = str(receiver or "").strip()
     if token == _operations_receiver():
         operations = _operations_snapshot(webspace_id=webspace_id)
@@ -7241,8 +7247,8 @@ def _build_stream_payload_for_receiver(receiver: str, webspace_id: str | None = 
     if token in {_marketplace_skills_receiver(), _marketplace_scenarios_receiver()}:
         try:
             conf = load_config()
-            ui_state = _ui_state()
-            selected_node_id = str(ui_state.get("selected_node_id") or getattr(conf, "node_id", "") or "").strip() or None
+            requested_node_id = str(selected_node_id or "").strip()
+            selected_node_id = requested_node_id or str(getattr(conf, "node_id", "") or "").strip() or None
             marketplace = _marketplace_items(
                 webspace_id=webspace_id,
                 selected_node_id=selected_node_id,

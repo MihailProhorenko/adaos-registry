@@ -379,6 +379,53 @@ def test_infrastate_marketplace_items_include_selected_node_target(monkeypatch):
     assert items["skills"][0]["target_node_id"] == "member-1"
 
 
+def test_infrastate_marketplace_stream_defaults_to_local_node(monkeypatch):
+    mod = _load_infrastate_module()
+
+    monkeypatch.setattr(mod, "get_ctx", lambda: SimpleNamespace())
+    monkeypatch.setattr(mod, "load_config", lambda: SimpleNamespace(node_id="hub-1"))
+    monkeypatch.setattr(mod, "_ui_state", lambda: {"selected_node_id": "member-1"})
+    monkeypatch.setattr(
+        mod,
+        "_marketplace_catalog_entries",
+        lambda kind: [{"kind": kind[:-1], "id": f"{kind[:-1]}_one", "name": f"{kind[:-1]}_one", "version": "1.0.0"}],
+    )
+    monkeypatch.setattr(mod, "_skills_items", lambda: [])
+    monkeypatch.setattr(mod, "_scenario_items", lambda: [])
+    monkeypatch.setattr(mod, "_operations_snapshot", lambda webspace_id=None: {"active_items": []})
+    monkeypatch.setattr(mod, "read_manifest", lambda name: {})
+
+    rows = mod._build_stream_payload_for_receiver(mod._marketplace_skills_receiver(), "homepoint")
+
+    assert rows[0]["node_id"] == "hub-1"
+    assert rows[0]["target_node_id"] == "hub-1"
+
+
+def test_infrastate_marketplace_stream_honors_explicit_target_node(monkeypatch):
+    mod = _load_infrastate_module()
+
+    monkeypatch.setattr(mod, "get_ctx", lambda: SimpleNamespace())
+    monkeypatch.setattr(mod, "load_config", lambda: SimpleNamespace(node_id="hub-1"))
+    monkeypatch.setattr(
+        mod,
+        "_marketplace_catalog_entries",
+        lambda kind: [{"kind": kind[:-1], "id": f"{kind[:-1]}_one", "name": f"{kind[:-1]}_one", "version": "1.0.0"}],
+    )
+    monkeypatch.setattr(mod, "_skills_items", lambda: [])
+    monkeypatch.setattr(mod, "_scenario_items", lambda: [])
+    monkeypatch.setattr(mod, "_operations_snapshot", lambda webspace_id=None: {"active_items": []})
+    monkeypatch.setattr(mod, "read_manifest", lambda name: {})
+
+    rows = mod._build_stream_payload_for_receiver(
+        mod._marketplace_skills_receiver(),
+        "homepoint",
+        selected_node_id="member-1",
+    )
+
+    assert rows[0]["node_id"] == "member-1"
+    assert rows[0]["target_node_id"] == "member-1"
+
+
 def test_infrastate_direct_marketplace_tool_returns_items(monkeypatch):
     mod = _load_infrastate_module()
 
