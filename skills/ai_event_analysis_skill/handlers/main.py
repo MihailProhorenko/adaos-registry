@@ -39,14 +39,14 @@ _CLASSES = [
 _PROJECTION_FINGERPRINTS: dict[str, str] = {}
 
 
-class _LazyWebspaceCtx:
+class _LazyCtxSubnet:
     def set(self, *args: Any, **kwargs: Any) -> Any:
-        from adaos.sdk.data.ctx import _ScopeCtx
+        from adaos.sdk.data import ctx_subnet as real_ctx_subnet
 
-        return _ScopeCtx("webspace").set(*args, **kwargs)
+        return real_ctx_subnet.set(*args, **kwargs)
 
 
-ctx_webspace = _LazyWebspaceCtx()
+ctx_subnet = _LazyCtxSubnet()
 
 
 def _webspace_id_from_payload(payload: Mapping[str, Any] | None) -> str:
@@ -76,7 +76,7 @@ def _set_projection_if_changed(slot: str, value: Any, *, webspace_id: str) -> bo
     if _PROJECTION_FINGERPRINTS.get(key) == fingerprint:
         return False
     _PROJECTION_FINGERPRINTS[key] = fingerprint
-    ctx_webspace.set(slot, value, webspace_id=webspace_id)
+    ctx_subnet.set(slot, value, webspace_id=webspace_id)
     return True
 
 

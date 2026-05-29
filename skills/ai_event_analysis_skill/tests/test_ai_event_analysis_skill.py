@@ -41,6 +41,7 @@ def test_manifest_declares_measurable_tools_and_stream_wakeup() -> None:
     }
     assert manifest["lifecycle"]["rehydrate"] == "rehydrate"
     projection_slots = {entry["slot"] for entry in manifest["data_projections"]}
+    assert {entry["scope"] for entry in manifest["data_projections"]} == {"subnet"}
     assert {
         "ai_event_analysis.summary",
         "ai_event_analysis.task",
@@ -77,7 +78,7 @@ def test_refresh_snapshot_projects_all_first_paint_sections(monkeypatch) -> None
     monkeypatch.setattr(mod, "set_current_skill", lambda _name: True)
     monkeypatch.setattr(mod, "clear_current_skill", lambda: None)
     monkeypatch.setattr(
-        mod.ctx_webspace,
+        mod.ctx_subnet,
         "set",
         lambda slot, value, webspace_id=None: written.append((slot, value, webspace_id)),
     )
