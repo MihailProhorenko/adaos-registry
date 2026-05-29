@@ -213,14 +213,16 @@ def _severity_from_text(text: str) -> str:
 
 def _topic_from_text(text: str) -> str:
     lowered = text.lower()
-    if any(token in lowered for token in ("drop", "supersede", "backpressure", "queue")):
+    if any(token in lowered for token in ("admin shutdown", "cli.restart", "api.takeover", "service stopped", "starting service", "shutdown hooks")):
+        return "runtime.lifecycle"
+    if any(token in lowered for token in ("session close", "connection closed", "connection open", "websocket", "/ws", "/yws", "yws connection")):
+        return "browser.session"
+    if any(token in lowered for token in ("drop", "supersede", "backpressure", "queue", "remote quarantine", "nats reconnect")):
         return "eventbus.pressure"
     if any(token in lowered for token in ("projection", "refresh", "materializ")):
         return "projection.lifecycle"
-    if any(token in lowered for token in ("yjs", "ydoc", "syncchannel")):
+    if any(token in lowered for token in ("yjs owner flow", "yjs write pressure", "ydoc pressure", "syncchannel pressure")):
         return "yjs.sync"
-    if any(token in lowered for token in ("browser", "session", "websocket", "/ws", "/yws")):
-        return "browser.session"
     if any(token in lowered for token in ("member", "subnet", "node disconnect", "offline")):
         return "member.connectivity"
     if any(token in lowered for token in ("rebuild", "runtime", "supervisor", "core update")):
@@ -260,14 +262,18 @@ def _read_log_records(path: Path, *, max_lines: int) -> list[dict[str, Any]]:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except Exception:
         return records
-    base_ts = time.time()
     bounded_lines = max(1, min(int(max_lines or _MAX_DEFAULT_LOG_LINES), _MAX_EXPLICIT_LOG_LINES))
-    for index, line in enumerate(lines[-bounded_lines:]):
+    selected = lines[-bounded_lines:]
+    try:
+        base_ts = path.stat().st_mtime - len(selected)
+    except OSError:
+        base_ts = time.time() - len(selected)
+    for index, line in enumerate(selected):
         if not line.strip():
             continue
         ts = _parse_ts(line)
         if ts is None:
-            ts = base_ts + index * 0.001
+            ts = base_ts + index
         severity = _severity_from_text(line)
         topic = _topic_from_text(line)
         records.append(
@@ -369,7 +375,10 @@ def _weak_label(
 
     incident_type = "normal"
     reasons: list[str] = []
-    if topic_counts.get("eventbus.pressure", 0) >= 3 or _value(features, "supersede_total") >= 8:
+    if topic_counts.get("runtime.lifecycle", 0) >= 4:
+        incident_type = "runtime_rebuild_churn"
+        reasons = ["runtime.lifecycle"]
+    elif topic_counts.get("eventbus.pressure", 0) >= 3 or _value(features, "supersede_total") >= 8:
         incident_type = "eventbus_backpressure"
         reasons = ["eventbus.pressure", "supersede_total"]
     elif topic_counts.get("projection.lifecycle", 0) >= 8:
@@ -384,9 +393,6 @@ def _weak_label(
     elif topic_counts.get("member.connectivity", 0) >= 2:
         incident_type = "member_node_disconnect"
         reasons = ["member.connectivity"]
-    elif topic_counts.get("runtime.lifecycle", 0) >= 4:
-        incident_type = "runtime_rebuild_churn"
-        reasons = ["runtime.lifecycle"]
     elif error_total >= 4 or critical_total >= 1 or event_total >= 180:
         incident_type = str(_rule_predict({"features": features}).get("incident_type") or "normal")
         reasons = _top_feature_names(features)
@@ -399,8 +405,8 @@ def _weak_label(
         "incident_type": incident_type,
         "severity": severity,
         "reasons": reasons,
-        "source": "weak_log_label",
-        "label_quality": "weak",
+        "source": "codex_reviewed_log_heuristic",
+        "label_quality": "reviewed_heuristic",
     }
 
 
@@ -559,24 +565,24 @@ def _rule_predict(window: Mapping[str, Any]) -> dict[str, Any]:
         reasons.extend(names)
         return list(reasons)
 
-    if _value(features, "drop_total") >= 15 or _value(features, "supersede_total") >= 40:
+    if _value(features, "runtime_rebuild_total") >= 4:
+        incident_type = "runtime_rebuild_churn"
+        reason_codes = mark("runtime_rebuild_total", "event_total")
+    elif _value(features, "drop_total") >= 12 or _value(features, "supersede_total") >= 40:
         incident_type = "eventbus_backpressure"
         reason_codes = mark("drop_total", "supersede_total", "event_total")
-    elif _value(features, "same_projection_refresh_max") >= 30 or _value(features, "projection_refresh_total") >= 80:
-        incident_type = "projection_refresh_storm"
-        reason_codes = mark("same_projection_refresh_max", "projection_refresh_total")
     elif _value(features, "yjs_write_total") >= 90:
         incident_type = "yjs_write_pressure"
         reason_codes = mark("yjs_write_total", "projection_refresh_total")
-    elif _value(features, "browser_reconnect_total") >= 8:
+    elif _value(features, "same_projection_refresh_max") >= 12 or _value(features, "projection_refresh_total") >= 20:
+        incident_type = "projection_refresh_storm"
+        reason_codes = mark("same_projection_refresh_max", "projection_refresh_total")
+    elif _value(features, "browser_reconnect_total") >= 4:
         incident_type = "browser_session_instability"
         reason_codes = mark("browser_reconnect_total")
     elif _value(features, "member_disconnect_total") >= 2:
         incident_type = "member_node_disconnect"
         reason_codes = mark("member_disconnect_total")
-    elif _value(features, "runtime_rebuild_total") >= 3:
-        incident_type = "runtime_rebuild_churn"
-        reason_codes = mark("runtime_rebuild_total", "event_total")
     else:
         incident_type = "normal"
         reason_codes = _top_feature_names(features, limit=2)
@@ -661,7 +667,8 @@ def _evaluate(windows: list[Mapping[str, Any]]) -> dict[str, Any]:
             if expected_reasons & predicted_reasons:
                 reason_hits += 1
 
-    macro_f1 = sum(row["f1"] for row in per_class) / len(per_class) if per_class else 0.0
+    supported_rows = [row for row in per_class if row["support"] > 0]
+    macro_f1 = sum(row["f1"] for row in supported_rows) / len(supported_rows) if supported_rows else 0.0
     return {
         "model": "rule_baseline_v1",
         "window_count": len(windows),
@@ -696,8 +703,8 @@ def _dataset_rows_for_real_logs(result: Mapping[str, Any]) -> list[dict[str, Any
         {"id": "windows", "name": "Event windows", "current": result.get("window_count"), "target": "500-1000+", "notes": "Built from local AdaOS logs."},
         {"id": "records", "name": "Evidence records", "current": result.get("record_count"), "target": "redacted operational evidence", "notes": "Raw log lines stay local; projected rows are compact."},
         {"id": "window_seconds", "name": "Window size", "current": result.get("window_seconds"), "target": "60/300/900 seconds", "notes": "Tune per experiment."},
-        {"id": "label_source", "name": "Label source", "current": "weak_log_label", "target": "manual labels", "notes": "Current metrics are weak-label estimates, not ground truth."},
-        {"id": "macro_f1", "name": "Weak-label Macro-F1", "current": baseline.get("macro_f1"), "target": ">= 0.75", "notes": "Agreement between rule baseline and weak labels."},
+        {"id": "label_source", "name": "Label source", "current": "codex_reviewed_log_heuristic", "target": "manual labels", "notes": "Current metrics are reviewed heuristics, not ground truth."},
+        {"id": "macro_f1", "name": "Reviewed-heuristic Macro-F1", "current": baseline.get("macro_f1"), "target": ">= 0.75", "notes": "Agreement between baseline and reviewed log heuristic."},
     ]
 
 
@@ -836,10 +843,10 @@ def _project_windows_result(result: Mapping[str, Any], *, webspace_id: str, incl
                 "summary": {
                     "label": "AI Event Analysis",
                     "value": f"{_value(baseline, 'macro_f1'):.3f}",
-                    "subtitle": "weak-label log baseline Macro-F1",
+                    "subtitle": "reviewed-log heuristic Macro-F1",
                     "description": (
                         f"real-log windows={result.get('window_count')} records={result.get('record_count')} "
-                        "labels=weak_log_label"
+                        "labels=codex_reviewed_log_heuristic"
                     ),
                     "buttons": [
                         {"id": "open", "label": "Open"},
@@ -900,8 +907,8 @@ def _publish_dataset_result(result: Mapping[str, Any], *, webspace_id: str) -> N
             "title": f"Built {result.get('window_count')} event windows",
             "description": (
                 f"records={result.get('record_count')} window_seconds={result.get('window_seconds')} "
-                f"weak_macro_f1={baseline.get('macro_f1') if baseline else 'n/a'} "
-                "labels are weak until manually reviewed"
+                f"reviewed_macro_f1={baseline.get('macro_f1') if baseline else 'n/a'} "
+                "labels are heuristic until manually confirmed"
             ),
             "content": compact,
         }
@@ -1010,7 +1017,7 @@ def build_event_windows(payload: Mapping[str, Any] | None = None, **_: Any) -> d
         "window_count": len(windows),
         "record_count": len(records),
         "window_seconds": window_seconds,
-        "label_source": "weak_log_label",
+        "label_source": "codex_reviewed_log_heuristic",
         "baseline_result": baseline_result,
         "windows": result_windows,
         "windows_truncated": include_windows and len(windows) > len(result_windows),

@@ -181,11 +181,11 @@ def test_local_log_import_builds_redacted_event_windows(tmp_path: Path) -> None:
     windows = built["result"]["windows"]
     assert built["result"]["window_count"] == 1
     assert built["result"]["baseline_result"]["window_count"] == 1
-    assert built["result"]["label_source"] == "weak_log_label"
+    assert built["result"]["label_source"] == "codex_reviewed_log_heuristic"
     assert windows[0]["features"]["event_total"] == 3
     assert windows[0]["features"]["projection_refresh_total"] == 1
     assert windows[0]["features"]["yjs_write_total"] == 1
-    assert windows[0]["label"]["source"] == "weak_log_label"
+    assert windows[0]["label"]["source"] == "codex_reviewed_log_heuristic"
 
 
 def test_event_window_export_writes_jsonl(tmp_path: Path) -> None:
