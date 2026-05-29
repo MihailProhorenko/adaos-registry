@@ -1,0 +1,93 @@
+name: ai_event_analysis_skill
+version: 0.1.1
+description: Research skill for measurable AI/ML analysis of AdaOS operational event
+  windows.
+runtime:
+  python: '3.11'
+webui_owner: shared
+data_projections:
+- scope: webspace
+  slot: ai_event_analysis.summary
+  targets:
+  - backend: yjs
+    path: data/ai_event_analysis/summary
+- scope: webspace
+  slot: ai_event_analysis.dataset
+  targets:
+  - backend: yjs
+    path: data/ai_event_analysis/dataset
+- scope: webspace
+  slot: ai_event_analysis.metrics
+  targets:
+  - backend: yjs
+    path: data/ai_event_analysis/metrics
+- scope: webspace
+  slot: ai_event_analysis.experiments
+  targets:
+  - backend: yjs
+    path: data/ai_event_analysis/experiments
+events:
+  subscribe:
+  - webio.stream.snapshot.requested
+  - ai_event_analysis.evaluate_requested
+  publish:
+  - ai_event_analysis.evaluation.completed
+tools:
+- name: get_lab_snapshot
+  description: Return the current AI event-analysis research task snapshot.
+  entry: handlers.main:get_lab_snapshot
+  input_schema:
+    type: object
+    properties:
+      webspace_id:
+        type: string
+  output_schema:
+    type: object
+    required:
+    - ok
+    - snapshot
+    properties:
+      ok:
+        type: boolean
+      snapshot:
+        type: object
+- name: run_demo_evaluation
+  description: Evaluate the built-in rule baseline on the synthetic event-window dataset.
+  entry: handlers.main:run_demo_evaluation
+  input_schema:
+    type: object
+    properties:
+      webspace_id:
+        type: string
+  output_schema:
+    type: object
+    required:
+    - ok
+    - result
+    properties:
+      ok:
+        type: boolean
+      result:
+        type: object
+- name: evaluate_windows
+  description: Evaluate custom labeled event windows with the rule baseline.
+  entry: handlers.main:evaluate_windows
+  input_schema:
+    type: object
+    properties:
+      windows:
+        type: array
+        items:
+          type: object
+  output_schema:
+    type: object
+    required:
+    - ok
+    - result
+    properties:
+      ok:
+        type: boolean
+      result:
+        type: object
+updated_at: '2026-05-29T08:40:41+00:00'
+
