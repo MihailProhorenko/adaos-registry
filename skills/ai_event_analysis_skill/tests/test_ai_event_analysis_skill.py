@@ -31,12 +31,28 @@ def test_manifest_declares_measurable_tools_and_stream_wakeup() -> None:
     assert "ai_event_analysis.evaluate_requested" in manifest["events"]["subscribe"]
     assert {tool["name"] for tool in manifest["tools"]} == {
         "get_lab_snapshot",
+        "refresh_snapshot",
+        "rehydrate",
         "run_demo_evaluation",
         "evaluate_windows",
         "import_local_logs",
         "build_event_windows",
         "export_event_windows_jsonl",
     }
+    assert manifest["lifecycle"]["rehydrate"] == "rehydrate"
+    projection_slots = {entry["slot"] for entry in manifest["data_projections"]}
+    assert {
+        "ai_event_analysis.summary",
+        "ai_event_analysis.task",
+        "ai_event_analysis.dataset",
+        "ai_event_analysis.windows",
+        "ai_event_analysis.metrics",
+        "ai_event_analysis.per_class",
+        "ai_event_analysis.chart",
+        "ai_event_analysis.event_volume_chart",
+        "ai_event_analysis.class_distribution_chart",
+        "ai_event_analysis.experiments",
+    }.issubset(projection_slots)
 
 
 def test_webui_declares_app_widget_and_results_receiver() -> None:
@@ -51,6 +67,50 @@ def test_webui_declares_app_widget_and_results_receiver() -> None:
     assert any(widget["type"] == "ui.list" for widget in widgets)
     tabs = next(widget for widget in widgets if widget["id"] == "ai-event-analysis-tabs")
     assert any(button["id"] == "windows" for button in tabs["inputs"]["buttons"])
+    actions = next(widget for widget in widgets if widget["id"] == "ai-event-analysis-actions")
+    assert any(button["id"] == "refresh_snapshot" for button in actions["inputs"]["buttons"])
+
+
+def test_refresh_snapshot_projects_all_first_paint_sections(monkeypatch) -> None:
+    mod = _load_module()
+    written: list[tuple[str, object, str]] = []
+    monkeypatch.setattr(mod, "set_current_skill", lambda _name: True)
+    monkeypatch.setattr(mod, "clear_current_skill", lambda: None)
+    monkeypatch.setattr(
+        mod.ctx_subnet,
+        "set",
+        lambda slot, value, webspace_id=None: written.append((slot, value, webspace_id)),
+    )
+    mod._PROJECTION_FINGERPRINTS.clear()
+
+    result = mod.refresh_snapshot({"webspace_id": "$runtime.webspace_id"})
+
+    assert result["ok"] is True
+    assert result["projected"]["webspace_id"] == "desktop"
+    slots = {slot for slot, _value, _webspace_id in written}
+    assert slots == {
+        "ai_event_analysis.summary",
+        "ai_event_analysis.task",
+        "ai_event_analysis.dataset",
+        "ai_event_analysis.windows",
+        "ai_event_analysis.metrics",
+        "ai_event_analysis.per_class",
+        "ai_event_analysis.chart",
+        "ai_event_analysis.event_volume_chart",
+        "ai_event_analysis.class_distribution_chart",
+        "ai_event_analysis.experiments",
+    }
+    assert all(webspace_id == "desktop" for _slot, _value, webspace_id in written)
+    assert next(value for slot, value, _ in written if slot == "ai_event_analysis.dataset")["items"]
+    assert next(value for slot, value, _ in written if slot == "ai_event_analysis.task")["items"]
+
+
+def test_webspace_template_literal_falls_back_to_desktop() -> None:
+    mod = _load_module()
+
+    assert mod._webspace_id_from_payload({"webspace_id": "$runtime.webspace_id"}) == "desktop"
+    assert mod._webspace_id_from_payload({"_meta": {"webspace_id": "$runtime.webspace_id"}}) == "desktop"
+    assert mod._webspace_id_from_payload({"webspace_id": "operations"}) == "operations"
 
 
 def test_rule_baseline_returns_required_measurement_fields() -> None:

@@ -1,5 +1,5 @@
 name: ai_event_analysis_skill
-version: 0.2.2
+version: 0.2.4
 description: Research skill for measurable AI/ML analysis of AdaOS operational event
   windows.
 runtime:
@@ -32,10 +32,30 @@ data_projections:
   - backend: yjs
     path: data/ai_event_analysis/windows
 - scope: webspace
-  slot: ai_event_analysis.charts
+  slot: ai_event_analysis.task
   targets:
   - backend: yjs
-    path: data/ai_event_analysis/charts
+    path: data/ai_event_analysis/task
+- scope: webspace
+  slot: ai_event_analysis.per_class
+  targets:
+  - backend: yjs
+    path: data/ai_event_analysis/per_class
+- scope: webspace
+  slot: ai_event_analysis.chart
+  targets:
+  - backend: yjs
+    path: data/ai_event_analysis/chart
+- scope: webspace
+  slot: ai_event_analysis.event_volume_chart
+  targets:
+  - backend: yjs
+    path: data/ai_event_analysis/event_volume_chart
+- scope: webspace
+  slot: ai_event_analysis.class_distribution_chart
+  targets:
+  - backend: yjs
+    path: data/ai_event_analysis/class_distribution_chart
 data_routes:
 - surface: widget:ai_event_analysis_widget
   route: yjs
@@ -90,6 +110,8 @@ memory_budget:
     max_windows_returned_explicitly: 64
     max_stream_rows: 12
     max_evidence_per_window: 4
+lifecycle:
+  rehydrate: rehydrate
 events:
   subscribe:
   - webio.stream.snapshot.requested
@@ -114,6 +136,40 @@ tools:
       ok:
         type: boolean
       snapshot:
+        type: object
+- name: refresh_snapshot
+  description: Project the compact first-paint AI event-analysis state into Yjs.
+  entry: handlers.main:refresh_snapshot
+  input_schema:
+    type: object
+    properties:
+      webspace_id:
+        type: string
+  output_schema:
+    type: object
+    required:
+    - ok
+    properties:
+      ok:
+        type: boolean
+      projected:
+        type: object
+- name: rehydrate
+  description: Restore compact browser-visible state after activation or reload.
+  entry: handlers.main:rehydrate
+  input_schema:
+    type: object
+    properties:
+      webspace_id:
+        type: string
+  output_schema:
+    type: object
+    required:
+    - ok
+    properties:
+      ok:
+        type: boolean
+      projected:
         type: object
 - name: run_demo_evaluation
   description: Evaluate the built-in rule baseline on the synthetic event-window dataset.
@@ -227,5 +283,5 @@ tools:
         type: boolean
       export:
         type: object
-updated_at: '2026-05-29T10:38:45+00:00'
+updated_at: '2026-05-29T10:50:49+00:00'
 

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from adaos.sdk.core.decorators import subscribe, tool
+from adaos.sdk.data.context import clear_current_skill, set_current_skill
 from adaos.sdk.data.events import publish as publish_event
 from adaos.sdk.io.out import stream_publish
 
@@ -35,20 +36,85 @@ _CLASSES = [
     "member_node_disconnect",
     "runtime_rebuild_churn",
 ]
+_PROJECTION_FINGERPRINTS: dict[str, str] = {}
+
+
+class _LazyCtxSubnet:
+    def set(self, *args: Any, **kwargs: Any) -> Any:
+        from adaos.sdk.data import ctx_subnet as real_ctx_subnet
+
+        return real_ctx_subnet.set(*args, **kwargs)
+
+
+ctx_subnet = _LazyCtxSubnet()
 
 
 def _webspace_id_from_payload(payload: Mapping[str, Any] | None) -> str:
     if not isinstance(payload, Mapping):
         return "desktop"
     raw = payload.get("webspace_id") or payload.get("workspace_id")
-    if isinstance(raw, str) and raw.strip():
+    if isinstance(raw, str) and raw.strip() and not raw.strip().startswith("$"):
         return raw.strip()
     meta = payload.get("_meta")
     if isinstance(meta, Mapping):
         nested = meta.get("webspace_id") or meta.get("workspace_id")
-        if isinstance(nested, str) and nested.strip():
+        if isinstance(nested, str) and nested.strip() and not nested.strip().startswith("$"):
             return nested.strip()
     return "desktop"
+
+
+def _fingerprint(value: Any) -> str:
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    except Exception:
+        return repr(value)
+
+
+def _set_projection_if_changed(slot: str, value: Any, *, webspace_id: str) -> bool:
+    key = f"{webspace_id}:{slot}"
+    fingerprint = _fingerprint(value)
+    if _PROJECTION_FINGERPRINTS.get(key) == fingerprint:
+        return False
+    _PROJECTION_FINGERPRINTS[key] = fingerprint
+    ctx_subnet.set(slot, value, webspace_id=webspace_id)
+    return True
+
+
+def _project_sections(sections: Mapping[str, Any], *, webspace_id: str) -> dict[str, Any]:
+    slot_by_section = {
+        "summary": "ai_event_analysis.summary",
+        "task": "ai_event_analysis.task",
+        "dataset": "ai_event_analysis.dataset",
+        "windows": "ai_event_analysis.windows",
+        "metrics": "ai_event_analysis.metrics",
+        "per_class": "ai_event_analysis.per_class",
+        "chart": "ai_event_analysis.chart",
+        "event_volume_chart": "ai_event_analysis.event_volume_chart",
+        "class_distribution_chart": "ai_event_analysis.class_distribution_chart",
+        "experiments": "ai_event_analysis.experiments",
+    }
+    pushed = False
+    written: list[str] = []
+    try:
+        pushed = bool(set_current_skill("ai_event_analysis_skill"))
+    except Exception:
+        pushed = False
+    try:
+        for section, slot in slot_by_section.items():
+            if section not in sections:
+                continue
+            try:
+                if _set_projection_if_changed(slot, sections[section], webspace_id=webspace_id):
+                    written.append(section)
+            except Exception:
+                continue
+    finally:
+        if pushed:
+            try:
+                clear_current_skill()
+            except Exception:
+                pass
+    return {"ok": True, "written": written, "webspace_id": webspace_id}
 
 
 def _now_iso() -> str:
@@ -529,6 +595,25 @@ def _snapshot() -> dict[str, Any]:
                 {"id": "run_demo", "label": "Run demo evaluation"},
             ],
         },
+        "task": {
+            "items": [
+                {
+                    "id": "objective",
+                    "title": "Objective",
+                    "description": "Classify fixed operational event windows into normal or incident classes and return top contributing signals.",
+                },
+                {
+                    "id": "dataset",
+                    "title": "Dataset contract",
+                    "description": "Use compact event-window rows with numeric features, labels, scope, timing, and redacted evidence references.",
+                },
+                {
+                    "id": "measurement",
+                    "title": "Measurement",
+                    "description": "Track macro-F1, critical recall, normal false-positive rate, detection delay, explanation hit rate, and per-class scores.",
+                },
+            ]
+        },
         "dataset": {
             "items": [
                 {"id": "windows", "name": "Labeled windows", "current": len(demo_windows), "target": "500-1000+", "notes": "One row per fixed event window."},
@@ -579,6 +664,57 @@ def _snapshot() -> dict[str, Any]:
     }
 
 
+def _project_lab_snapshot(*, webspace_id: str = "desktop") -> dict[str, Any]:
+    return _project_sections(_snapshot(), webspace_id=webspace_id)
+
+
+def _project_evaluation_result(result: Mapping[str, Any], *, webspace_id: str) -> dict[str, Any]:
+    sections = {
+        "summary": {
+            "label": "AI Event Analysis",
+            "value": f"{_value(result, 'macro_f1'):.3f}",
+            "subtitle": "rule baseline macro-F1",
+            "description": (
+                f"accuracy={result.get('accuracy')} critical_recall={result.get('critical_recall')} "
+                f"normal_fpr={result.get('false_positive_rate')}"
+            ),
+            "buttons": [
+                {"id": "open", "label": "Open"},
+                {"id": "run_demo", "label": "Run demo evaluation"},
+            ],
+        },
+        "metrics": {"items": _metric_rows(result)},
+        "per_class": {"items": list(result.get("per_class") or [])},
+        "chart": {
+            "title": "Baseline quality",
+            "unit": "score",
+            "points": [
+                {"ts": "accuracy", "value": result.get("accuracy")},
+                {"ts": "macro-F1", "value": result.get("macro_f1")},
+                {"ts": "critical recall", "value": result.get("critical_recall")},
+                {"ts": "reason hit", "value": result.get("top_reason_hit_rate")},
+            ],
+        },
+    }
+    return _project_sections(sections, webspace_id=webspace_id)
+
+
+def _project_windows_result(result: Mapping[str, Any], *, webspace_id: str) -> dict[str, Any]:
+    sections = {
+        "windows": {"items": list(result.get("rows") or [])},
+        "event_volume_chart": result.get("event_volume_chart") or {"title": "Event volume by window", "unit": "events", "points": []},
+        "class_distribution_chart": result.get("class_distribution_chart") or {"title": "Baseline class distribution", "unit": "windows", "points": []},
+        "dataset": {
+            "items": [
+                {"id": "windows", "name": "Event windows", "current": result.get("window_count"), "target": "500-1000+", "notes": "Built from local logs or imported records."},
+                {"id": "records", "name": "Evidence records", "current": result.get("record_count"), "target": "redacted operational evidence", "notes": "Raw logs stay out of Yjs."},
+                {"id": "window_seconds", "name": "Window size", "current": result.get("window_seconds"), "target": "60/300/900 seconds", "notes": "Tune per experiment."},
+            ]
+        },
+    }
+    return _project_sections(sections, webspace_id=webspace_id)
+
+
 def _publish_result(result: Mapping[str, Any], *, webspace_id: str) -> None:
     compact = _compact_evaluation_result(result)
     payload = [
@@ -627,14 +763,29 @@ def _publish_dataset_result(result: Mapping[str, Any], *, webspace_id: str) -> N
 
 @tool("get_lab_snapshot")
 def get_lab_snapshot(payload: Mapping[str, Any] | None = None, **_: Any) -> dict[str, Any]:
-    _ = payload
+    body = payload if isinstance(payload, Mapping) else {}
+    if bool(body.get("project")):
+        _project_lab_snapshot(webspace_id=_webspace_id_from_payload(body))
     return {"ok": True, "snapshot": _snapshot()}
+
+
+@tool("refresh_snapshot")
+def refresh_snapshot(payload: Mapping[str, Any] | None = None, **_: Any) -> dict[str, Any]:
+    webspace_id = _webspace_id_from_payload(payload if isinstance(payload, Mapping) else {})
+    projected = _project_lab_snapshot(webspace_id=webspace_id)
+    return {"ok": True, "projected": projected}
+
+
+@tool("rehydrate")
+def rehydrate(payload: Mapping[str, Any] | None = None, **_: Any) -> dict[str, Any]:
+    return refresh_snapshot(payload if isinstance(payload, Mapping) else {})
 
 
 @tool("run_demo_evaluation")
 def run_demo_evaluation(payload: Mapping[str, Any] | None = None, **_: Any) -> dict[str, Any]:
     webspace_id = _webspace_id_from_payload(payload)
     result = _evaluate(_synthetic_windows())
+    _project_evaluation_result(result, webspace_id=webspace_id)
     _publish_result(result, webspace_id=webspace_id)
     try:
         publish_event(
@@ -653,6 +804,7 @@ def evaluate_windows(payload: Mapping[str, Any] | None = None, **_: Any) -> dict
     raw_windows = body.get("windows")
     windows = [item for item in raw_windows if isinstance(item, Mapping)] if isinstance(raw_windows, list) else _synthetic_windows()
     result = _evaluate(windows)
+    _project_evaluation_result(result, webspace_id=_webspace_id_from_payload(body))
     _publish_result(result, webspace_id=_webspace_id_from_payload(body))
     return {"ok": True, "result": result}
 
@@ -720,6 +872,7 @@ def build_event_windows(payload: Mapping[str, Any] | None = None, **_: Any) -> d
         },
         "built_at": _now_iso(),
     }
+    _project_windows_result(result, webspace_id=_webspace_id_from_payload(body))
     _publish_dataset_result(result, webspace_id=_webspace_id_from_payload(body))
     return {"ok": True, "result": result}
 

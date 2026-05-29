@@ -438,6 +438,10 @@
                     "label": "Run demo baseline"
                   },
                   {
+                    "id": "refresh_snapshot",
+                    "label": "Refresh snapshot"
+                  },
+                  {
                     "id": "build_windows",
                     "label": "Build windows"
                   },
@@ -452,6 +456,14 @@
                   "on": "click:run_demo",
                   "type": "callSkill",
                   "target": "ai_event_analysis_skill.run_demo_evaluation",
+                  "params": {
+                    "webspace_id": "$runtime.webspace_id"
+                  }
+                },
+                {
+                  "on": "click:refresh_snapshot",
+                  "type": "callSkill",
+                  "target": "ai_event_analysis_skill.refresh_snapshot",
                   "params": {
                     "webspace_id": "$runtime.webspace_id"
                   }
