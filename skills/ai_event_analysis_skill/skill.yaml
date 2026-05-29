@@ -1,5 +1,5 @@
 name: ai_event_analysis_skill
-version: 0.2.14
+version: 0.2.15
 description: Research skill for measurable AI/ML analysis of AdaOS operational event
   windows.
 runtime:
@@ -56,6 +56,26 @@ data_projections:
   targets:
   - backend: yjs
     path: data/ai_event_analysis/class_distribution_chart
+- scope: subnet
+  slot: ai_event_analysis.subscription_summary
+  targets:
+  - backend: yjs
+    path: data/ai_event_analysis/subscription_summary
+- scope: subnet
+  slot: ai_event_analysis.subscription_edges
+  targets:
+  - backend: yjs
+    path: data/ai_event_analysis/subscription_edges
+- scope: subnet
+  slot: ai_event_analysis.subscription_metrics
+  targets:
+  - backend: yjs
+    path: data/ai_event_analysis/subscription_metrics
+- scope: subnet
+  slot: ai_event_analysis.subscription_chart
+  targets:
+  - backend: yjs
+    path: data/ai_event_analysis/subscription_chart
 data_routes:
 - surface: widget:ai_event_analysis_widget
   route: yjs
@@ -290,6 +310,33 @@ tools:
         type: boolean
       result:
         type: object
+- name: analyze_subscription_flow
+  description: Analyze event publisher/subscriber flow from local logs and project
+    subscription routing health.
+  entry: handlers.main:analyze_subscription_flow
+  input_schema:
+    type: object
+    properties:
+      records:
+        type: array
+        items:
+          type: object
+      path:
+        type: string
+      max_lines:
+        type: integer
+      webspace_id:
+        type: string
+  output_schema:
+    type: object
+    required:
+    - ok
+    - result
+    properties:
+      ok:
+        type: boolean
+      result:
+        type: object
 - name: export_event_windows_jsonl
   description: Export event-window records as a JSONL dataset file.
   entry: handlers.main:export_event_windows_jsonl
@@ -312,5 +359,5 @@ tools:
         type: boolean
       export:
         type: object
-updated_at: '2026-05-29T14:47:58+00:00'
+updated_at: '2026-05-29T15:05:55+00:00'
 

@@ -38,6 +38,7 @@ def test_manifest_declares_measurable_tools_and_stream_wakeup() -> None:
         "import_local_logs",
         "build_event_windows",
         "analyze_local_logs",
+        "analyze_subscription_flow",
         "export_event_windows_jsonl",
     }
     assert manifest["lifecycle"]["rehydrate"] == "rehydrate"
@@ -53,6 +54,10 @@ def test_manifest_declares_measurable_tools_and_stream_wakeup() -> None:
         "ai_event_analysis.chart",
         "ai_event_analysis.event_volume_chart",
         "ai_event_analysis.class_distribution_chart",
+        "ai_event_analysis.subscription_summary",
+        "ai_event_analysis.subscription_edges",
+        "ai_event_analysis.subscription_metrics",
+        "ai_event_analysis.subscription_chart",
         "ai_event_analysis.experiments",
     }.issubset(projection_slots)
 
@@ -69,9 +74,11 @@ def test_webui_declares_app_widget_and_results_receiver() -> None:
     assert any(widget["type"] == "ui.list" for widget in widgets)
     tabs = next(widget for widget in widgets if widget["id"] == "ai-event-analysis-tabs")
     assert any(button["id"] == "windows" for button in tabs["inputs"]["buttons"])
+    assert any(button["id"] == "subscriptions" for button in tabs["inputs"]["buttons"])
     actions = next(widget for widget in widgets if widget["id"] == "ai-event-analysis-actions")
     assert any(button["id"] == "refresh_snapshot" for button in actions["inputs"]["buttons"])
     assert any(button["id"] == "analyze_logs" for button in actions["inputs"]["buttons"])
+    assert any(button["id"] == "analyze_subscriptions" for button in actions["inputs"]["buttons"])
 
 
 def test_refresh_snapshot_projects_all_first_paint_sections(monkeypatch) -> None:
@@ -248,3 +255,37 @@ def test_stream_dataset_publish_is_compact(monkeypatch) -> None:
     payload_json = json.dumps(published[0], ensure_ascii=False)
     assert "x" * 1000 not in payload_json
     assert len(payload_json.encode("utf-8")) < 12288
+
+
+def test_subscription_flow_analysis_detects_missing_and_idle_consumers() -> None:
+    mod = _load_module()
+    records = [
+        {
+            "message": '{"level":"INFO","logger":"adaos.sdk.subscriptions","msg":"skill=alpha subscriptions=[event.a: on_a, event.b: on_b]"}',
+            "severity": "info",
+            "topic": "runtime.log",
+            "ts": 1,
+        },
+        {
+            "message": '{"level":"INFO","logger":"adaos.events","type":"event.a","source":"publisher.one"}',
+            "severity": "info",
+            "topic": "runtime.log",
+            "ts": 2,
+        },
+        {
+            "message": '{"level":"INFO","logger":"adaos.events","type":"event.c","source":"publisher.two"}',
+            "severity": "info",
+            "topic": "runtime.log",
+            "ts": 3,
+        },
+    ]
+
+    result = mod.analyze_subscription_flow({"records": records})["result"]
+
+    assert result["summary"]["declared_subscriptions"] == 2
+    assert result["summary"]["missing_consumers"] == 1
+    assert result["summary"]["idle_subscriptions"] == 1
+    states = {row["event_type"]: row["state"] for row in result["rows"]}
+    assert states["event.a"] == "active"
+    assert states["event.b"] == "idle"
+    assert states["event.c"] == "missing_consumer"

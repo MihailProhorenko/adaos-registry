@@ -26,6 +26,13 @@ operational events and predicts:
 The model must be evaluated against simple baselines instead of being judged by
 subjective usefulness alone.
 
+The current prototype also includes **Subscription Flow Analysis**. This mode
+looks at the event routing layer itself: declared subscriptions, observed event
+types, publisher/subscriber edges, missing consumers, idle subscriptions, noisy
+subscriptions, and a compact routing risk score. It is intended to reveal
+whether the operational event model is observable enough to tune filters,
+fanout, throttling, and subscription ownership.
+
 ## Student Assignment
 
 Title:
@@ -162,12 +169,29 @@ See [Dataset Schema](docs/dataset-schema.md).
 - [x] Add baseline quality chart.
 - [x] Add event-volume chart by event window.
 - [x] Add class-distribution chart for baseline predictions.
+- [x] Add a `Subscriptions` Web UI view for event publisher/subscriber flow.
 - [ ] Group related windows into incident candidates.
 - [ ] Generate operator summaries from incident candidates.
 - [ ] Suggest the next diagnostic surface, such as logs, Yjs pressure, runtime
   reliability, or device inventory.
 - [ ] Publish demanded `ai-summary:*` projections after the operational-event
   MVP gate accepts the canonical runtime path.
+
+### Phase 8. Subscription Flow Analysis
+
+- [x] Parse `skill=... subscriptions=[event: handler]` log lines into
+  subscription declarations.
+- [x] Parse observed event emissions from structured log lines.
+- [x] Build publisher/subscriber edge rows with event volume, fanout, state, and
+  risk.
+- [x] Detect `missing_consumer`, `idle`, and `noisy` subscription states.
+- [x] Project subscription summary, edge table, metrics, and event-volume chart
+  into Yjs.
+- [ ] Add latency and handler-duration metrics when event delivery logs expose
+  correlation ids and timings.
+- [ ] Add suggested filter changes for overbroad subscriptions.
+- [ ] Add before/after simulation for throttling, coalescing, and debounce
+  policies.
 
 ## Data Collection Strategy
 
@@ -204,6 +228,21 @@ flowchart LR
   C --> H[JSONL dataset]
   H --> I[Manual labeling]
   I --> F
+```
+
+## Subscription Flow Diagram
+
+```mermaid
+flowchart LR
+  A[Subscription declarations] --> C[Publisher / subscriber graph]
+  B[Observed event emissions] --> C
+  C --> D[Missing consumers]
+  C --> E[Idle subscriptions]
+  C --> F[Noisy subscriptions]
+  D --> G[Routing risk score]
+  E --> G
+  F --> G
+  G --> H[Web UI tables and charts]
 ```
 
 ## Evaluation Loop
@@ -244,12 +283,46 @@ The skill currently ships:
 - local log import into redacted evidence records;
 - fixed-window feature extraction;
 - JSONL event-window export;
+- a reviewed-heuristic real-log dataset exported as
+  `data/reviewed_event_windows.jsonl`;
 - a deterministic rule baseline;
 - metric computation utilities;
 - a Web UI app named `AI Event Analysis`;
 - a `Windows` inspection view;
+- a `Subscriptions` inspection view;
 - baseline quality, event-volume, and class-distribution charts;
+- subscription summary, publisher/subscriber edge table, and event-type volume
+  chart;
 - a live stream receiver for demo evaluation and dataset-building results.
+
+Latest local reviewed-heuristic run:
+
+- `1993` imported evidence records;
+- `78` one-minute event windows;
+- `accuracy = 0.987`;
+- `macro-F1 = 0.714`;
+- `critical_recall = 0.750`;
+- `normal false-positive rate = 0.000`.
+
+These metrics are useful for prototyping but are not final ground truth. The
+label source is `codex_reviewed_log_heuristic`; the next quality gate is manual
+review and acceptance/rejection of event-window labels.
+
+Latest local subscription-flow run:
+
+- `1993` imported evidence records;
+- `8` declared subscriptions observed in logs;
+- `4` observed event types;
+- `3` event types with no observed subscriber in the sampled logs;
+- `7` idle subscriptions in the sampled logs;
+- routing risk score `1.0`.
+
+The subscription-flow numbers are sample-sensitive because they are inferred
+from available logs, not from a canonical event-routing journal. They are useful
+as an observability check: the current logs expose subscription declarations and
+event emissions, but they do not yet provide enough delivery, ack, latency, and
+correlation metadata to prove whether a subscription is truly unused or merely
+inactive in the selected sample.
 
 The prototype intentionally keeps model training out of the first iteration so
 the measurement contract can stabilize before dependencies and runtime costs

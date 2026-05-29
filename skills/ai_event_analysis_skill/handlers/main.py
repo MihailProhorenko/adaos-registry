@@ -25,6 +25,7 @@ _MAX_TOOL_WINDOWS = 64
 _MAX_STREAM_ROWS = 12
 _MAX_STREAM_POINTS = 24
 _MAX_EVIDENCE_PER_WINDOW = 4
+_MAX_SUBSCRIPTION_ROWS = 64
 _TS_RE = re.compile(
     r"(?P<ts>\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?)"
 )
@@ -155,6 +156,10 @@ def _project_sections(sections: Mapping[str, Any], *, webspace_id: str, force: b
         "chart": "ai_event_analysis.chart",
         "event_volume_chart": "ai_event_analysis.event_volume_chart",
         "class_distribution_chart": "ai_event_analysis.class_distribution_chart",
+        "subscription_summary": "ai_event_analysis.subscription_summary",
+        "subscription_edges": "ai_event_analysis.subscription_edges",
+        "subscription_metrics": "ai_event_analysis.subscription_metrics",
+        "subscription_chart": "ai_event_analysis.subscription_chart",
         "experiments": "ai_event_analysis.experiments",
     }
     pushed = False
@@ -361,6 +366,171 @@ def _records_to_windows(
             }
         )
     return windows
+
+
+def _parse_subscription_declarations(text: str) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    skill_match = re.search(r"skill=([A-Za-z0-9_.\-<>]+)", text or "")
+    subscriber = skill_match.group(1) if skill_match else "unknown"
+    match = re.search(r"subscriptions=\[(.*?)\]", text or "")
+    if not match:
+        return rows
+    body = match.group(1)
+    for item in body.split(","):
+        token = item.strip()
+        if not token or ":" not in token:
+            continue
+        event_type, handler = token.split(":", 1)
+        event_type = event_type.strip()
+        handler = handler.strip()
+        if event_type:
+            rows.append({"subscriber": subscriber, "event_type": event_type, "handler": handler})
+    return rows
+
+
+def _parse_event_observation(text: str) -> dict[str, str] | None:
+    raw = text or ""
+    event_type = ""
+    source = ""
+    try:
+        payload = json.loads(raw)
+        if isinstance(payload, Mapping):
+            event_type = str(payload.get("type") or "").strip()
+            source = str(payload.get("source") or payload.get("logger") or "").strip()
+    except Exception:
+        pass
+    if not event_type:
+        match = re.search(r"\btype=([A-Za-z0-9_.:\-]+)", raw)
+        if match:
+            event_type = match.group(1).strip()
+    if not source:
+        match = re.search(r"\bsource=([A-Za-z0-9_.:\-]+)", raw)
+        if match:
+            source = match.group(1).strip()
+    if not event_type:
+        return None
+    if len(event_type) < 5 or event_type.endswith("."):
+        return None
+    return {"event_type": event_type, "publisher": source or "unknown"}
+
+
+def _subscription_flow_from_records(records: list[Mapping[str, Any]]) -> dict[str, Any]:
+    declarations: dict[tuple[str, str], dict[str, Any]] = {}
+    event_counts: dict[str, int] = {}
+    publishers: dict[str, set[str]] = {}
+    samples: dict[str, str] = {}
+
+    for record in records:
+        message = str(record.get("message") or "")
+        for decl in _parse_subscription_declarations(message):
+            key = (decl["subscriber"], decl["event_type"])
+            current = declarations.setdefault(
+                key,
+                {
+                    "subscriber": decl["subscriber"],
+                    "event_type": decl["event_type"],
+                    "handler": decl.get("handler") or "",
+                    "declared": 0,
+                },
+            )
+            current["declared"] = int(current.get("declared") or 0) + 1
+        observed = _parse_event_observation(message)
+        if observed:
+            event_type = observed["event_type"]
+            event_counts[event_type] = event_counts.get(event_type, 0) + 1
+            publishers.setdefault(event_type, set()).add(observed["publisher"])
+            samples.setdefault(event_type, message[:160])
+
+    rows: list[dict[str, Any]] = []
+    subscribed_events = {event_type for _subscriber, event_type in declarations}
+    for (_subscriber, event_type), decl in sorted(declarations.items(), key=lambda item: (item[0][1], item[0][0])):
+        volume = event_counts.get(event_type, 0)
+        state = "active"
+        if volume == 0:
+            state = "idle"
+        elif volume >= 50:
+            state = "noisy"
+        rows.append(
+            {
+                "id": f"{decl['subscriber']}:{event_type}",
+                "event_type": event_type,
+                "publisher": ",".join(sorted(publishers.get(event_type, set()))) or "unknown",
+                "subscriber": decl["subscriber"],
+                "handler": decl.get("handler") or "",
+                "events": volume,
+                "fanout": sum(1 for _subscriber, subscribed in declarations if subscribed == event_type),
+                "state": state,
+                "risk": "warning" if state in {"idle", "noisy"} else "ok",
+            }
+        )
+
+    for event_type, count in sorted(event_counts.items(), key=lambda item: (-item[1], item[0])):
+        if event_type in subscribed_events:
+            continue
+        rows.append(
+            {
+                "id": f"missing:{event_type}",
+                "event_type": event_type,
+                "publisher": ",".join(sorted(publishers.get(event_type, set()))) or "unknown",
+                "subscriber": "<none>",
+                "handler": "",
+                "events": count,
+                "fanout": 0,
+                "state": "missing_consumer",
+                "risk": "critical" if count >= 5 else "warning",
+                "sample": samples.get(event_type, ""),
+            }
+        )
+
+    missing = sum(1 for row in rows if row["state"] == "missing_consumer")
+    idle = sum(1 for row in rows if row["state"] == "idle")
+    noisy = sum(1 for row in rows if row["state"] == "noisy")
+    declared = len(declarations)
+    event_types = len(event_counts)
+    risk_score = round(min(1.0, (missing * 2 + idle + noisy) / max(1, len(rows))), 3)
+    rows = rows[:_MAX_SUBSCRIPTION_ROWS]
+    return {
+        "summary": {
+            "declared_subscriptions": declared,
+            "observed_event_types": event_types,
+            "missing_consumers": missing,
+            "idle_subscriptions": idle,
+            "noisy_subscriptions": noisy,
+            "risk_score": risk_score,
+        },
+        "rows": rows,
+        "chart": {
+            "title": "Observed event volume by type",
+            "unit": "events",
+            "points": [
+                {"ts": event_type[-24:], "value": count}
+                for event_type, count in sorted(event_counts.items(), key=lambda item: (-item[1], item[0]))[:_MAX_STREAM_POINTS]
+            ],
+        },
+        "metrics": {
+            "items": [
+                {"id": "declared", "metric": "Declared subscriptions", "value": declared, "target": "tracked", "status": "info"},
+                {"id": "observed_types", "metric": "Observed event types", "value": event_types, "target": "tracked", "status": "info"},
+                {"id": "missing", "metric": "Missing consumers", "value": missing, "target": "0", "status": "ok" if missing == 0 else "warning"},
+                {"id": "idle", "metric": "Idle subscriptions", "value": idle, "target": "minimize", "status": "ok" if idle == 0 else "warning"},
+                {"id": "noisy", "metric": "Noisy subscriptions", "value": noisy, "target": "review", "status": "ok" if noisy == 0 else "warning"},
+                {"id": "risk_score", "metric": "Routing risk score", "value": risk_score, "target": "<= 0.15", "status": "ok" if risk_score <= 0.15 else "warning"},
+            ]
+        },
+    }
+
+
+def _project_subscription_flow(result: Mapping[str, Any], *, webspace_id: str) -> dict[str, Any]:
+    sections = {
+        "subscription_summary": {"items": [
+            {"id": key, "name": key.replace("_", " ").title(), "value": value}
+            for key, value in (result.get("summary") or {}).items()
+        ]},
+        "subscription_edges": {"items": list(result.get("rows") or [])},
+        "subscription_metrics": result.get("metrics") or {"items": []},
+        "subscription_chart": result.get("chart") or {"title": "Observed event volume by type", "unit": "events", "points": []},
+    }
+    return _project_sections(sections, webspace_id=webspace_id, force=True)
 
 
 def _weak_label(
@@ -1044,6 +1214,41 @@ def analyze_local_logs(payload: Mapping[str, Any] | None = None, **_: Any) -> di
     body = dict(payload) if isinstance(payload, Mapping) else {}
     body.setdefault("window_seconds", 60)
     return build_event_windows(body)
+
+
+@tool("analyze_subscription_flow")
+def analyze_subscription_flow(payload: Mapping[str, Any] | None = None, **_: Any) -> dict[str, Any]:
+    body = payload if isinstance(payload, Mapping) else {}
+    raw_records = body.get("records")
+    if isinstance(raw_records, list):
+        records = [item for item in raw_records if isinstance(item, Mapping)]
+    else:
+        imported = import_local_logs(body)
+        records = [item for item in imported.get("records", []) if isinstance(item, Mapping)]
+    result = _subscription_flow_from_records(records)
+    result["record_count"] = len(records)
+    result["analyzed_at"] = _now_iso()
+    _project_subscription_flow(result, webspace_id=_webspace_id_from_payload(body))
+    try:
+        stream_publish(
+            _RESULTS_RECEIVER,
+            [
+                {
+                    "id": "subscription-flow",
+                    "title": f"Subscription flow risk {result['summary']['risk_score']}",
+                    "description": (
+                        f"declared={result['summary']['declared_subscriptions']} "
+                        f"observed_types={result['summary']['observed_event_types']} "
+                        f"missing={result['summary']['missing_consumers']}"
+                    ),
+                    "content": result,
+                }
+            ],
+            _meta={"webspace_id": _webspace_id_from_payload(body)},
+        )
+    except Exception:
+        pass
+    return {"ok": True, "result": result}
 
 
 @tool("export_event_windows_jsonl")

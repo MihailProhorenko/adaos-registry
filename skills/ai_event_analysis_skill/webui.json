@@ -148,6 +148,10 @@
                   {
                     "id": "experiments",
                     "label": "Experiments"
+                  },
+                  {
+                    "id": "subscriptions",
+                    "label": "Subscriptions"
                   }
                 ]
               },
@@ -378,6 +382,79 @@
               }
             },
             {
+              "id": "ai-event-analysis-subscription-summary",
+              "type": "ui.table",
+              "area": "main",
+              "title": "Subscription Flow Summary",
+              "visibleIf": "$state.aiEventAnalysisTab === 'subscriptions'",
+              "dataSource": {
+                "kind": "y",
+                "path": "data/ai_event_analysis/subscription_summary"
+              },
+              "inputs": {
+                "emptyText": "No subscription summary",
+                "columns": [
+                  {
+                    "key": "name",
+                    "label": "Metric"
+                  },
+                  {
+                    "key": "value",
+                    "label": "Value",
+                    "width": "110px",
+                    "mono": true
+                  }
+                ]
+              }
+            },
+            {
+              "id": "ai-event-analysis-subscription-edges",
+              "type": "ui.table",
+              "area": "main",
+              "title": "Publisher / Subscriber Edges",
+              "visibleIf": "$state.aiEventAnalysisTab === 'subscriptions'",
+              "dataSource": {
+                "kind": "y",
+                "path": "data/ai_event_analysis/subscription_edges"
+              },
+              "inputs": {
+                "emptyText": "No subscription flow data",
+                "columns": [
+                  {
+                    "key": "event_type",
+                    "label": "Event"
+                  },
+                  {
+                    "key": "publisher",
+                    "label": "Publisher",
+                    "width": "130px"
+                  },
+                  {
+                    "key": "subscriber",
+                    "label": "Subscriber",
+                    "width": "170px"
+                  },
+                  {
+                    "key": "events",
+                    "label": "Events",
+                    "width": "80px",
+                    "mono": true
+                  },
+                  {
+                    "key": "fanout",
+                    "label": "Fanout",
+                    "width": "80px",
+                    "mono": true
+                  },
+                  {
+                    "key": "state",
+                    "label": "State",
+                    "width": "130px"
+                  }
+                ]
+              }
+            },
+            {
               "id": "ai-event-analysis-chart",
               "type": "visual.metricChart",
               "area": "right",
@@ -425,6 +502,22 @@
               }
             },
             {
+              "id": "ai-event-analysis-subscription-chart",
+              "type": "visual.metricChart",
+              "area": "right",
+              "title": "Event type volume",
+              "visibleIf": "$state.aiEventAnalysisTab === 'subscriptions'",
+              "dataSource": {
+                "kind": "y",
+                "path": "data/ai_event_analysis/subscription_chart"
+              },
+              "inputs": {
+                "xKey": "ts",
+                "yKey": "value",
+                "emptyText": "No subscription flow chart"
+              }
+            },
+            {
               "id": "ai-event-analysis-actions",
               "type": "input.commandBar",
               "area": "right",
@@ -444,6 +537,10 @@
                   {
                     "id": "analyze_logs",
                     "label": "Analyze real logs"
+                  },
+                  {
+                    "id": "analyze_subscriptions",
+                    "label": "Analyze subscriptions"
                   },
                   {
                     "id": "build_windows",
@@ -479,6 +576,14 @@
                   "params": {
                     "webspace_id": "$runtime.webspace_id",
                     "window_seconds": 60
+                  }
+                },
+                {
+                  "on": "click:analyze_subscriptions",
+                  "type": "callSkill",
+                  "target": "ai_event_analysis_skill.analyze_subscription_flow",
+                  "params": {
+                    "webspace_id": "$runtime.webspace_id"
                   }
                 },
                 {
