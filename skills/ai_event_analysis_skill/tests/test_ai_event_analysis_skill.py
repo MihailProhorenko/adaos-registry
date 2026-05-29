@@ -77,7 +77,7 @@ def test_refresh_snapshot_projects_all_first_paint_sections(monkeypatch) -> None
     monkeypatch.setattr(mod, "set_current_skill", lambda _name: True)
     monkeypatch.setattr(mod, "clear_current_skill", lambda: None)
     monkeypatch.setattr(
-        mod.ctx_subnet,
+        mod.ctx_webspace,
         "set",
         lambda slot, value, webspace_id=None: written.append((slot, value, webspace_id)),
     )
