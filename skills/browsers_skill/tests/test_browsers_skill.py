@@ -42,13 +42,32 @@ def _load_browsers_skill_module():
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
+    from adaos.sdk.data.projections import clear_projection_demand
+
+    clear_projection_demand()
     return module
+
+
+def _remember_browser_projection_demand(mod, webspace_id: str = "desktop") -> None:
+    for slot in (
+        "browsers.summary",
+        "browsers.devices",
+        "browsers.clients",
+        "browsers.current_summary",
+        "browsers.current_name",
+    ):
+        mod._PROJECTION_RUNTIME.remember_projection(
+            slot,
+            webspace_id=webspace_id,
+            subscription_id=f"test:{webspace_id}:{slot}",
+        )
 
 
 def test_browsers_skill_detach_link_refreshes_snapshot_without_nameerror(monkeypatch) -> None:
     mod = _load_browsers_skill_module()
     mod._SELECTED_BROWSER_BY_WS.clear()
     mod._PROJECTION_RUNTIME.reset()
+    _remember_browser_projection_demand(mod)
     mod._SELECTED_BROWSER_BY_WS["desktop"] = "missing-browser"
 
     browser_entry = {
@@ -101,6 +120,7 @@ def test_browsers_skill_projection_refresh_skips_unchanged_yjs_writes(monkeypatc
     mod = _load_browsers_skill_module()
     mod._SELECTED_BROWSER_BY_WS.clear()
     mod._PROJECTION_RUNTIME.reset()
+    _remember_browser_projection_demand(mod)
 
     browser_entry = {
         "id": "browser-1",
@@ -165,6 +185,7 @@ def test_browsers_skill_explicit_refresh_recomputes_without_rewriting_identical_
     mod = _load_browsers_skill_module()
     mod._SELECTED_BROWSER_BY_WS.clear()
     mod._PROJECTION_RUNTIME.reset()
+    _remember_browser_projection_demand(mod)
 
     browser_entry = {
         "id": "browser-1",
@@ -236,6 +257,60 @@ def test_browsers_skill_projection_refresh_does_not_eager_publish_streams(monkey
 
     assert [item[0] for item in streams] == ["browsers.devices"]
     assert streams[0][2]["webspace_id"] == "desktop"
+
+
+def test_browsers_skill_yjs_projection_requires_active_demand(monkeypatch) -> None:
+    mod = _load_browsers_skill_module()
+    mod._SELECTED_BROWSER_BY_WS.clear()
+    mod._PROJECTION_RUNTIME.reset()
+
+    async def _unexpected_set_async(slot, value, *, webspace_id=None):
+        raise AssertionError("inactive browsers projections must not write Yjs")
+
+    monkeypatch.setattr(mod.ctx_subnet, "set_async", _unexpected_set_async)
+    monkeypatch.setattr(mod.workspace_index, "list_workspaces", lambda: [])
+    monkeypatch.setattr(mod.sdk_access_links, "list_browser_links", lambda: [])
+    monkeypatch.setattr(mod.sdk_access_links, "get_browser_link", lambda _device_id: None)
+    monkeypatch.setattr(mod.sdk_access_links, "lifetime_label", lambda _entry: "Permanent")
+
+    asyncio.run(mod._publish_snapshot("desktop"))
+
+    diagnostics = mod._PROJECTION_RUNTIME.diagnostics_snapshot()
+    assert diagnostics["pressure_blocked_total"] == 5
+    assert diagnostics["last_result"]["reason"] == "no_active_projection_demand"
+
+
+def test_browsers_skill_stream_payload_filters_online_only_by_default(monkeypatch) -> None:
+    mod = _load_browsers_skill_module()
+    mod._SELECTED_BROWSER_BY_WS.clear()
+
+    entries = [
+        {
+            "id": "browser-online",
+            "display_name": "Online browser",
+            "access_class": "device",
+            "online": True,
+        },
+        {
+            "id": "browser-offline",
+            "display_name": "Offline browser",
+            "access_class": "device",
+            "online": False,
+        },
+    ]
+    monkeypatch.setattr(mod.sdk_access_links, "list_browser_links", lambda: [dict(item) for item in entries])
+    monkeypatch.setattr(
+        mod.sdk_access_links,
+        "get_browser_link",
+        lambda device_id: next((dict(item) for item in entries if item["id"] == device_id), None),
+    )
+    monkeypatch.setattr(mod.sdk_access_links, "lifetime_label", lambda _entry: "Permanent")
+
+    default_rows = mod._build_stream_payload("browsers.devices", "desktop")
+    all_rows = mod._build_stream_payload("browsers.devices", "desktop", params={"online_only": False})
+
+    assert [item["id"] for item in default_rows] == ["browser-online"]
+    assert {item["id"] for item in all_rows} == {"browser-online", "browser-offline"}
 
 
 def test_browsers_skill_refresh_event_handler_does_not_wait_for_projection(monkeypatch) -> None:

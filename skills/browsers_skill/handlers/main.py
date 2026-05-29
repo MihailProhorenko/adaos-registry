@@ -54,7 +54,7 @@ _DATA_PROJECTION_ENTRIES = [
 
 def _projection_slot(name: str, path: str) -> ProjectionSlot:
     try:
-        return ProjectionSlot(name, path, demand="always")
+        return ProjectionSlot(name, path, demand="active")
     except TypeError:
         return ProjectionSlot(name, path)
 
@@ -87,7 +87,7 @@ def _sdk_stream_publish(
 
 
 def _build_registered_stream_payload(context: ProjectionContext) -> Any | None:
-    return _build_stream_payload(str(context.receiver or ""), context.webspace_id)
+    return _build_stream_payload(str(context.receiver or ""), context.webspace_id, params=context.params)
 
 
 _STREAM_RUNTIME = StreamRuntime(
@@ -370,6 +370,37 @@ def _browser_sort_key(entry: Mapping[str, Any]) -> tuple[str, str]:
     )
 
 
+def _coerce_bool(value: Any, *, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    token = str(value if value is not None else "").strip().lower()
+    if not token:
+        return default
+    if token in {"1", "true", "yes", "on", "online"}:
+        return True
+    if token in {"0", "false", "no", "off", "all"}:
+        return False
+    return default
+
+
+def _stream_params_online_only(params: Mapping[str, Any] | None) -> bool:
+    if not isinstance(params, Mapping):
+        return True
+    if "online_only" in params:
+        return _coerce_bool(params.get("online_only"), default=True)
+    if "onlineOnly" in params:
+        return _coerce_bool(params.get("onlineOnly"), default=True)
+    return True
+
+
+def _online_tiles(items: list[dict[str, Any]], params: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    if not _stream_params_online_only(params):
+        return items
+    return [item for item in items if bool(item.get("online"))]
+
+
 def _current_browser_payload(device_id: str | None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     entry = sdk_access_links.get_browser_link(str(device_id or "").strip()) if device_id else None
     if not entry:
@@ -455,15 +486,20 @@ async def _publish_snapshot(target_ws: str | None = None, *, fanout: bool = Fals
     return payload
 
 
-def _build_stream_payload(receiver: str, webspace_id: str | None = None) -> Any | None:
+def _build_stream_payload(
+    receiver: str,
+    webspace_id: str | None = None,
+    *,
+    params: Mapping[str, Any] | None = None,
+) -> Any | None:
     payload, effective_ws = _build_snapshot(webspace_id)
     available_entries = list(payload["devices"]) + list(payload["clients"])
     current_id = _resolve_current_browser_id(available_entries, effective_ws)
     current_summary, current_name = _current_browser_payload(current_id)
     data_by_receiver = {
         "browsers.summary": payload["summary"],
-        "browsers.devices": payload["devices"],
-        "browsers.clients": payload["clients"],
+        "browsers.devices": _online_tiles(payload["devices"], params),
+        "browsers.clients": _online_tiles(payload["clients"], params),
         "browsers.current_summary": current_summary,
         "browsers.current_name": current_name,
     }

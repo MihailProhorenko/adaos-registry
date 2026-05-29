@@ -83,6 +83,9 @@
         "title": "Browsers",
         "schema": {
           "id": "browsers_modal",
+          "initialState": {
+            "browsersOnlineOnly": true
+          },
 					"layout": {
 						"type": "single",
 						"pattern": "stack",
@@ -138,8 +141,8 @@
               "area": "main",
               "title": "Browsers",
               "dataSource": {
-                "kind": "y",
-                "path": "data/browsers/summary"
+                "kind": "stream",
+                "receiver": "browsers.summary"
               }
             },
             {
@@ -148,8 +151,11 @@
               "area": "main",
               "title": "Devices",
               "dataSource": {
-                "kind": "y",
-                "path": "data/browsers/devices"
+                "kind": "stream",
+                "receiver": "browsers.devices",
+                "params": {
+                  "online_only": "$state.browsersOnlineOnly"
+                }
               },
               "inputs": {
                 "titleKey": "title",
@@ -191,8 +197,11 @@
               "area": "main",
               "title": "Clients",
               "dataSource": {
-                "kind": "y",
-                "path": "data/browsers/clients"
+                "kind": "stream",
+                "receiver": "browsers.clients",
+                "params": {
+                  "online_only": "$state.browsersOnlineOnly"
+                }
               },
               "inputs": {
                 "titleKey": "title",
@@ -252,8 +261,8 @@
               "area": "main",
               "title": "Browser",
               "dataSource": {
-                "kind": "y",
-                "path": "data/browsers/current_summary"
+                "kind": "stream",
+                "receiver": "browsers.current_summary"
               },
               "inputs": {
                 "titleKey": "title",
@@ -268,8 +277,8 @@
               "area": "main",
               "title": "Browser name",
               "dataSource": {
-                "kind": "y",
-                "path": "data/browsers/current_name"
+                "kind": "stream",
+                "receiver": "browsers.current_name"
               },
               "inputs": {
                 "bindField": "value",
