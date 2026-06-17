@@ -3,6 +3,8 @@ version: 0.2.19
 description: Анализ дефектов камней на видео с помощью нейросети (сегментация DeepLabV3)
 entry: handlers/main.py
 runtime:
+  env:
+    allow_heavy_dependencies: true
   python: '3.11'
 dependencies:
 - pillow>=10.0.0
